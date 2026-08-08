@@ -87,6 +87,7 @@ tags: [商品图匠, ListingForge, 开发进度, AI交接]
 - `npm run check` 已通过：ESLint 通过，9 个 Vitest 文件共 34 个测试通过（含任务轮询状态映射、API 设置组件级交互、局部编辑校验），TypeScript 与 Vite 生产构建通过。
 - 测试覆盖 Zustand 数量边界/任务更新、浏览器环境拒绝桌面命令、Agent JSON 解析、图片格式/体积/像素/总引用图数校验、平台预设解析与尺寸选项。
 - Rust 追加验证：`api.rs`（含新增 `download_task_result`）与 `project.rs`（含新增 `resolve_default_project`）在 ASCII 验证副本 `cargo check --offline` 零错误（仅 dead_code 警告）。
+- **2026-08-09 GitHub Actions 实跑全绿**：`ci.yml` 的 frontend（npm ci + check，34 测试全过）与 rust（Ubuntu 完整特性 `cargo check`，含 wry/webview/ort/segmentation 全链）两 job 均通过；`assetProtocol` 配置已补齐（protocol-asset feature 匹配校验）。
 - 浏览器 1586×992 视觉检查：生成、结果、画布、任务、设置均已截图检查；画布最终已完整铺满背景并保持可编辑文字层。
 - 生成页已完成默认 `1280×720` 和 `1586×992` 视觉回归；上传、选择和费用确认交互通过，页面无控制台 error。
 - 最新截图位于 `design/implementation/06-generation-workbench-multi-upload.png` 和 `07-cost-confirmation.png`，并已记录到 `docs/08-测试与验收/视觉保真记录.md`。
@@ -114,8 +115,8 @@ tags: [商品图匠, ListingForge, 开发进度, AI交接]
 6. [x] 完成本地 U²-Net ONNX 抠图。（2026-08-09 完成：模型来源/哈希/Apache-2.0 已记录，Rust 命令与前端入口已实现并通过 cargo check 与前端全量测试；推理尚未实跑——需要随发布分发的 `onnxruntime.dll`。）
 7. [x] 完成局部 AI 编辑的真实遮罩导出、APIMart 参考图/遮罩策略与费用确认。（2026-08-09 完成：蒙版笔刷绘制与预览、本地“原图+红色标注蒙版”合成、付费确认与提交；APIMart 无原生 mask 参数，已按参考图策略实现。未用真实 Key 联网验收。）
 8. [x] 复测 API 设置、画布六种导出和任务轮询，增加组件级测试。（2026-08-09 完成：新增 9 个测试 —— 轮询状态映射抽为纯函数 `src/lib/taskPolling.ts`（5 测）、API 设置组件级交互（4 测，mock 桌面模块验证保存/测试连接/拒绝空密钥）、局部编辑校验（4 测）。画布六种导出的 canvas 合成无法在 jsdom 中执行（无 canvas 2d），合成路径需真实浏览器/桌面验证。）
-9. [x] 更新 README、MIT LICENSE、贡献说明、GitHub Actions。（2026-08-09 完成：README 已含特性/本地开发/文档/贡献与许可章节，LICENSE 为 MIT 2026，CONTRIBUTING.md 含开发流程与安全要求；`ci.yml` 新增 Rust 后端 job（Ubuntu 完整特性 `cargo check`），`desktop-build.yml` 增加 rust-cache，两文件经 YAML 校验。剩余人工步骤：用户注册 GitHub 后创建远程仓库、申请 SignPath Foundation 免费 Windows 开源签名——永远不要索要 GitHub 密码。）
-10. [x] 在内存更充足或 CI 环境运行正式 `cargo check`、`tauri build`、Windows NSIS 和 macOS 三架构构建。（2026-08-09 完成工作流就绪：`ci.yml` 新增 Rust job 在 GitHub runner 跑完整特性 `cargo check`；`desktop-build.yml` 已含 Windows NSIS + macOS Intel/Apple Silicon 三矩阵 `tauri build`（workflow_dispatch）。实际执行依赖远程仓库推送后触发，尚未运行。）
+9. [x] 更新 README、MIT LICENSE、贡献说明、GitHub Actions；创建远程仓库。（2026-08-09 完成：README/LICENSE/CONTRIBUTING/CI 就绪并经 YAML 校验；远程仓库 `https://github.com/zhou9527-lj/listingforge` 已创建（公开、默认分支 main），两个提交经 SSH 推送成功，CI 自动触发实跑正式 cargo check。**重要事实：从 Gitee 克隆的 FastAdmin 旧历史含 GitHub 无法解包的缺陷对象（客户端与服务器均报 `did not receive expected object`，SSH/HTTPS 直连/代理/重建仓库均无法修复），最终以 orphan 重建为单一根提交 `37d89db` 解决，旧历史已丢弃。** 剩余人工步骤：申请 SignPath Foundation 免费 Windows 开源签名——永远不要索要 GitHub 密码。SSH 密钥 `~/.ssh/github_ed25519` 已配置且认证通过，后续 push 走 SSH。）
+10. [x] 在内存更充足或 CI 环境运行正式 `cargo check`、`tauri build`、Windows NSIS 和 macOS 三架构构建。（2026-08-09 完成：`ci.yml` 完整特性 `cargo check` 已在 GitHub runner 实跑全绿（frontend + rust 两 job）；`desktop-build.yml` 三矩阵 `tauri build` 已就绪待手动触发，尚在用户可操作列表。）
 11. 删除/归档临时构建目录前先确认精确路径。不要删除用户已有文件或全局 Rust 工具链。
 
 ## 六、完成标准尚未满足
@@ -127,10 +128,10 @@ tags: [商品图匠, ListingForge, 开发进度, AI交接]
 - [x] 局部蒙版编辑真实调用（蒙版绘制/标注图合成/费用确认/提交入列；未联网验收，且 APIMart 无原生 mask 参数，采用“原图+红色标注参考图”策略）。
 - [ ] 真 Key 的三供应商连接测试与非付费/最小付费验收。
 - [x] APIMart 完成任务下载到项目 `results/`，不依赖临时 URL（代码完成，未联网验收）。
-- [ ] 完整语义分层 PSD（当前是“背景 + 可编辑叠加”两层）。
+- [x] 完整语义分层 PSD（2026-08-09 完成：画布对象按语义分组为独立 PSD 层——主标题/特性内容/图片与Logo/其他文字/形状与装饰/蒙版标注，层序自顶向下与 z 序一致，背景固定最底；分层规划为纯函数 `src/lib/psdLayers.ts`，新增 6 测（共 40）；ag-psd children[0]=最顶层经二进制层记录解析验证；PSD 打开效果需真实桌面确认）。
 - [ ] 最终浏览器截图与跨平台打包（视觉保真记录已创建）。
 - [x] README/LICENSE/CI/发布材料与免费 Windows 开源签名申请。（README/LICENSE/CONTRIBUTING/CI 工作流已完成；远程仓库与 SignPath Foundation 申请待用户注册 GitHub 后人工推进。）
 
 ## 七、最近一次进度更新时间
 
-2026-08-09（第六次）：交接 #9 完成——README/MIT LICENSE/CONTRIBUTING 核对无缺；`ci.yml` 新增 Rust 后端 job（GitHub runner 完整特性 `cargo check`，覆盖交接 #10 的 CI 部分），`desktop-build.yml` 增加 rust-cache；两 workflow 经 YAML 校验通过。待人工推进：用户注册 GitHub 后创建远程仓库、申请 SignPath Foundation（永不索要密码），推送后 CI/打包工作流即可实跑。前端全量检查上次全绿（9 文件 34 测试），本次无 TS 改动。
+2026-08-09（第九次）：语义分层 PSD 与最终浏览器截图完成。PSD 语义分层（主标题/特性内容/图片与Logo/其他文字/形状与装饰/蒙版标注，层序自顶向下与 z 序一致，背景固定最底）已推送并经 CI 全绿（10 文件 40 测试）。浏览器截图：`scripts/screenshot.mjs`（puppeteer-core + 系统 Edge，独立 profile；注意 launch defaultViewport 在该 Edge 上序列化异常，须 goto 后 setViewport；arg 解析曾有 NaN bug 已修）在 1586×992 下捕获五主屏至 `design/implementation/08-*.png`，PIL 校验五图互异非空白、控制台无 error，已记入视觉保真记录。其余状态同第八次：仓库 `https://github.com/zhou9527-lj/listingforge` 公开、CI 全绿；待人工推进：手动触发 `desktop-build.yml` 打包、SignPath Foundation 申请、真 Key 联网验收。
