@@ -7,6 +7,18 @@ export default tseslint.config(
   { ignores: ["dist", "node_modules", "src-tauri/target", ".toolchains", ".build", ".tmp", "vite.config.js", "vite.config.d.ts"] },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
+  // Node 脚本（截图/构建工具）：声明 Node 全局变量，避免 no-undef
+  {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        process: "readonly",
+        console: "readonly",
+        setTimeout: "readonly",
+        document: "readonly", // page.evaluate 回调在浏览器上下文执行
+      },
+    },
+  },
   {
     files: ["**/*.{ts,tsx}"],
     languageOptions: {
