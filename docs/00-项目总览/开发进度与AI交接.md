@@ -116,7 +116,7 @@ tags: [商品图匠, ListingForge, 开发进度, AI交接]
 7. [x] 完成局部 AI 编辑的真实遮罩导出、APIMart 参考图/遮罩策略与费用确认。（2026-08-09 完成：蒙版笔刷绘制与预览、本地“原图+红色标注蒙版”合成、付费确认与提交；APIMart 无原生 mask 参数，已按参考图策略实现。未用真实 Key 联网验收。）
 8. [x] 复测 API 设置、画布六种导出和任务轮询，增加组件级测试。（2026-08-09 完成：新增 9 个测试 —— 轮询状态映射抽为纯函数 `src/lib/taskPolling.ts`（5 测）、API 设置组件级交互（4 测，mock 桌面模块验证保存/测试连接/拒绝空密钥）、局部编辑校验（4 测）。画布六种导出的 canvas 合成无法在 jsdom 中执行（无 canvas 2d），合成路径需真实浏览器/桌面验证。）
 9. [x] 更新 README、MIT LICENSE、贡献说明、GitHub Actions；创建远程仓库。（2026-08-09 完成：README/LICENSE/CONTRIBUTING/CI 就绪并经 YAML 校验；远程仓库 `https://github.com/zhou9527-lj/listingforge` 已创建（公开、默认分支 main），两个提交经 SSH 推送成功，CI 自动触发实跑正式 cargo check。**重要事实：从 Gitee 克隆的 FastAdmin 旧历史含 GitHub 无法解包的缺陷对象（客户端与服务器均报 `did not receive expected object`，SSH/HTTPS 直连/代理/重建仓库均无法修复），最终以 orphan 重建为单一根提交 `37d89db` 解决，旧历史已丢弃。** 剩余人工步骤：申请 SignPath Foundation 免费 Windows 开源签名——永远不要索要 GitHub 密码。SSH 密钥 `~/.ssh/github_ed25519` 已配置且认证通过，后续 push 走 SSH。）
-10. [x] 在内存更充足或 CI 环境运行正式 `cargo check`、`tauri build`、Windows NSIS 和 macOS 三架构构建。（2026-08-09 完成：`ci.yml` 完整特性 `cargo check` 已在 GitHub runner 实跑全绿（frontend + rust 两 job）；`desktop-build.yml` 三矩阵 `tauri build` 已就绪待手动触发，尚在用户可操作列表。）
+10. [x] 在内存更充足或 CI 环境运行正式 `cargo check`、`tauri build`、Windows NSIS 和 macOS 三架构构建。（2026-08-09 完成：`ci.yml` 完整特性 `cargo check` 已在 GitHub runner 实跑全绿（frontend + rust 两 job）；`desktop-build.yml` 三矩阵 `tauri build` 已就绪待手动触发，尚在用户可操作列表。**2026-08-09 追加：Windows MSI 因 productName 为中文（`商品图匠`）在 WiX light.exe 阶段失败——tauri issue #8363 仍 open 无官方修复；已改 workflow 按平台传 `--bundles`（Windows 只打 NSIS，macOS 打 app+dmg）。NSIS 对中文 productName 正常，SignPath 也支持 NSIS 签名。本地 Windows 构建同样需 `npx tauri build --bundles nsis`（或先试 `bundle.windows.wix.language: "zh-CN"` 偏方，schema 已确认该字段存在但未验证）。**）
 11. 删除/归档临时构建目录前先确认精确路径。不要删除用户已有文件或全局 Rust 工具链。
 
 ## 六、完成标准尚未满足
