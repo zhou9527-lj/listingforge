@@ -1,3 +1,4 @@
+/* eslint-env node */
 /**
  * 五个主屏的浏览器截图脚本（开发期视觉回归）。
  * 用法：node scripts/screenshot.mjs [--width 1586] [--height 992]
