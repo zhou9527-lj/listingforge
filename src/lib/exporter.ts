@@ -2,6 +2,7 @@ import { writePsd } from "ag-psd";
 import type { Canvas } from "fabric";
 import JSZip from "jszip";
 import { hasTauriRuntime } from "./desktop";
+import { planPsdLayers } from "./psdLayers";
 
 export type ExportFormat = "png" | "jpg" | "webp" | "psd" | "zip" | "long";
 
@@ -50,6 +51,36 @@ const canvasBlob = (canvas: HTMLCanvasElement, type: string, quality?: number) =
   canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("编码导出图片失败")), type, quality);
 });
 
+/**
+ * 语义分层 PSD 的图层构建。
+ * 层序自顶向下（ag-psd children[0] = 最顶层）：画布对象按语义分组逐层
+ * 渲染（对象按画布 z 序），背景固定为最底层。与合成图的视觉效果一致。
+ */
+const buildSemanticPsdLayers = async (fabricCanvas: Canvas, backgroundUrl: string, { width, height }: ExportDimensions) => {
+  const background = makeCanvas(width, height);
+  const backgroundContext = background.getContext("2d", { willReadFrequently: true });
+  if (!backgroundContext) throw new Error("无法初始化导出画布");
+  backgroundContext.drawImage(await loadImage(backgroundUrl), 0, 0, width, height);
+
+  const objects = fabricCanvas.getObjects();
+  const plan = planPsdLayers(objects);
+  const scaleX = width / fabricCanvas.getWidth();
+  const scaleY = height / fabricCanvas.getHeight();
+
+  const children: { name: string; imageData: ImageData }[] = [];
+  for (const layer of plan) {
+    const layerCanvas = makeCanvas(width, height);
+    const ctx = layerCanvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) throw new Error("无法初始化图层画布");
+    ctx.scale(scaleX, scaleY);
+    // 组内对象按画布 z 序（下标升序 = 从底到顶）渲染
+    [...layer.indices].sort((a, b) => a - b).forEach((index) => objects[index].render(ctx));
+    children.push({ name: layer.label, imageData: ctx.getImageData(0, 0, width, height) });
+  }
+  children.push({ name: "商品背景", imageData: backgroundContext.getImageData(0, 0, width, height) });
+  return children;
+};
+
 const saveBytes = async (bytes: Uint8Array, filename: string, mimeType: string) => {
   if (hasTauriRuntime()) {
     const { save } = await import("@tauri-apps/plugin-dialog");
@@ -76,20 +107,13 @@ export async function exportCanvasDocument(
   dimensions: ExportDimensions = DEFAULT_EXPORT_DIMENSIONS,
 ) {
   const { width, height } = dimensions;
-  const { background, overlay, composite } = await renderLayers(fabricCanvas, backgroundUrl, dimensions);
   if (format === "psd") {
-    const backgroundContext = background.getContext("2d")!;
-    const overlayContext = overlay.getContext("2d")!;
-    const psd = writePsd({
-      width,
-      height,
-      children: [
-        { name: "可编辑文字与装饰", imageData: overlayContext.getImageData(0, 0, width, height) },
-        { name: "商品背景", imageData: backgroundContext.getImageData(0, 0, width, height) },
-      ],
-    });
+    const children = await buildSemanticPsdLayers(fabricCanvas, backgroundUrl, dimensions);
+    const psd = writePsd({ width, height, children });
     return saveBytes(new Uint8Array(psd), "ListingForge-商品海报.psd", "image/vnd.adobe.photoshop");
   }
+
+  const { composite } = await renderLayers(fabricCanvas, backgroundUrl, dimensions);
 
   const png = await canvasBlob(composite, "image/png");
   if (format === "zip") {
