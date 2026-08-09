@@ -1,15 +1,16 @@
 {
   "name": "listingforge",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "check": "npm run lint && npm run test && npm run build",
+    "check": "npm run lint && npm run test:capabilities && npm run test && npm run build",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run --maxWorkers=1 --no-file-parallelism",
+    "test:capabilities": "node scripts/check-capabilities.mjs",
     "test:click": "node scripts/click-test.mjs",
     "test:watch": "vitest",
     "tauri:dev": "tauri dev",
