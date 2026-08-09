@@ -53,6 +53,8 @@ interface AppState {
   hydrateLocalState: (tasks: TaskItem[], settings: { theme: ThemeMode; locale: LocaleCode } | null) => void;
   updateTask: (id: string, patch: Partial<TaskItem>) => void;
   clearCompletedTasks: () => void;
+  removeTask: (id: string) => void;
+  pruneResultSelection: (ids: string[]) => void;
   setCanvasPage: (id: string) => void;
   setSelectedLayer: (id: string) => void;
   setInspectorTab: (tab: AppState["inspectorTab"]) => void;
@@ -137,6 +139,17 @@ export const useAppStore = create<AppState>()(
         tasks: state.tasks.filter((task) => task.status !== "completed"),
         selectedTaskId: state.tasks.find((task) => task.status !== "completed")?.id ?? "",
       })),
+      removeTask: (id) => set((state) => ({
+        tasks: state.tasks.filter((task) => task.id !== id),
+        selectedTaskId: state.selectedTaskId === id ? "" : state.selectedTaskId,
+      })),
+      pruneResultSelection: (ids) => set((state) => {
+        const removed = new Set(ids);
+        return {
+          selectedResults: state.selectedResults.filter((resultId) => !removed.has(resultId)),
+          favoriteResults: state.favoriteResults.filter((resultId) => !removed.has(resultId)),
+        };
+      }),
       setCanvasPage: (selectedCanvasPage) => set({ selectedCanvasPage }),
       setSelectedLayer: (selectedLayerId) => set({ selectedLayerId }),
       setInspectorTab: (inspectorTab) => set({ inspectorTab }),

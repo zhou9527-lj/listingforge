@@ -16,8 +16,10 @@ export default tseslint.config(
         console: "readonly",
         setTimeout: "readonly",
         fetch: "readonly",
+        Buffer: "readonly",
         document: "readonly", // page.evaluate 回调在浏览器上下文执行
         window: "readonly", // evaluateOnNewDocument / evaluate 回调在浏览器上下文执行
+        atob: "readonly", // 同一回调内解码 PNG mock 字节
       },
     },
   },

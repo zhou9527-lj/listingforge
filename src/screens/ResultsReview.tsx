@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { Grid2X2, ImageOff, List, RefreshCcw, Star, Upload, WandSparkles } from "lucide-react";
+import { Grid2X2, ImageOff, List, RefreshCcw, Star, Trash2, Upload, WandSparkles, X } from "lucide-react";
 import { AgentPanel } from "../components/AgentPanel";
 import { Button, CheckBox, SectionTitle, StatusDot } from "../components/ui";
-import { hasTauriRuntime } from "../lib/desktop";
-import { loadPersistedResults } from "../lib/database";
+import { deleteProjectResultFile, hasTauriRuntime } from "../lib/desktop";
+import { deleteResultRecords, getProjectPath, loadPersistedResults } from "../lib/database";
 import { useAppStore } from "../store/appStore";
 
 type ResultType = "all" | "white" | "scene" | "poster" | "detail";
@@ -48,11 +48,14 @@ export function ResultsReview() {
   const toggleFavorite = useAppStore((state) => state.toggleFavorite);
   const setScreen = useAppStore((state) => state.setScreen);
   const openResultInCanvas = useAppStore((state) => state.openResultInCanvas);
+  const pruneResultSelection = useAppStore((state) => state.pruneResultSelection);
   const notify = useAppStore((state) => state.notify);
   const [realResults, setRealResults] = useState<RealResult[]>([]);
   const [scope, setScope] = useState<"all" | "recent">("all");
   const [sort, setSort] = useState<"time" | "type">("time");
   const [view, setView] = useState<"grid" | "list">("grid");
+  const [deleteTarget, setDeleteTarget] = useState<RealResult[] | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (!hasTauriRuntime()) return;
@@ -97,6 +100,29 @@ export function ResultsReview() {
     notify("已从本地结果打开画布");
   };
 
+  /** 删除结果记录并同步删除本地图片文件（Rust 侧仅允许删除项目 results/ 目录内的文件） */
+  const executeDelete = async (items: RealResult[]) => {
+    const ids = items.map((item) => item.id);
+    setDeleting(true);
+    try {
+      const refs = await deleteResultRecords(ids);
+      if (hasTauriRuntime()) {
+        const projectPath = await getProjectPath();
+        if (projectPath) {
+          await Promise.all(refs.map((ref) => ref.localPath ? deleteProjectResultFile(projectPath, ref.localPath).catch(() => {}) : Promise.resolve()));
+        }
+      }
+      pruneResultSelection(ids);
+      setRealResults((current) => current.filter((item) => !ids.includes(item.id)));
+      setDeleteTarget(null);
+      notify(`已删除 ${ids.length} 张结果图片${refs.some((ref) => ref.localPath) ? "，本地文件已同步删除" : "（无本地文件）"}`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "删除失败");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
     <div className="screen-layout screen-layout--results">
       <aside className="context-sidebar result-sidebar">
@@ -113,6 +139,7 @@ export function ResultsReview() {
             <Button icon={<RefreshCcw size={16} />} onClick={() => setScreen("generate")}>重新生成</Button>
             <Button variant="primary" icon={<WandSparkles size={16} />} disabled={visibleItems.length === 0} onClick={() => { if (visibleItems[0]) editRealResult(visibleItems[0]); }}>加入画布</Button>
             <Button icon={<Upload size={16} />} disabled={selected.length === 0} onClick={() => { notify(`已选择 ${selected.length} 张图片，请在导出中心完成本地导出`); setScreen("exports"); }}>导出所选</Button>
+            <Button icon={<Trash2 size={16} />} disabled={selected.length === 0} onClick={() => setDeleteTarget(visibleItems.filter((item) => selected.includes(item.id)))}>删除所选</Button>
           </div>
         </header>
         {visibleItems.length === 0 ? (
@@ -139,6 +166,7 @@ export function ResultsReview() {
                     <img src={item.src} alt={`${item.title}候选图`} />
                     <div className="result-card__check"><CheckBox checked={isSelected} label={`选择${item.title}`} onChange={() => toggleResult(item.id)} /></div>
                     <button className={`result-card__favorite ${isFavorite ? "is-active" : ""}`} aria-label="收藏" onClick={() => toggleFavorite(item.id)}><Star size={17} fill={isFavorite ? "currentColor" : "none"} /></button>
+                    <button className="result-card__delete" aria-label="删除这张图片" title="删除这张图片" onClick={() => setDeleteTarget([item])}><Trash2 size={15} /></button>
                     <div className="result-card__meta"><span>{item.title}<em className="local-badge">本地</em></span><button onClick={() => editRealResult(item)}>编辑</button></div>
                   </article>
                 );
@@ -149,6 +177,19 @@ export function ResultsReview() {
       </section>
 
       <AgentPanel mode="review" reviewTarget={visibleItems[0] ?? null} />
+
+      {deleteTarget ? (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal" role="dialog" aria-modal="true" aria-label="删除结果图片">
+            <header><h2>删除结果图片</h2><button className="modal-close" aria-label="关闭" onClick={() => setDeleteTarget(null)}><X size={16} /></button></header>
+            <p className="modal-warning">将删除 {deleteTarget.length} 张结果图片及其本地文件（任务记录保留），不可恢复。确定继续吗？</p>
+            <footer className="modal-actions">
+              <Button onClick={() => setDeleteTarget(null)}>取消</Button>
+              <Button variant="danger" disabled={deleting} onClick={() => void executeDelete(deleteTarget)}>{deleting ? "删除中…" : "确认删除"}</Button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }

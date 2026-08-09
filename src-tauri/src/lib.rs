@@ -166,6 +166,22 @@ fn migrations() -> Vec<Migration> {
             CREATE INDEX IF NOT EXISTS idx_agent_messages_conversation ON agent_messages(conversation_id, created_at);
         "#,
         },
+        Migration {
+            version: 4,
+            description: "index_assets_by_project",
+            kind: MigrationKind::Up,
+            sql: r#"
+            CREATE INDEX IF NOT EXISTS idx_assets_project ON assets(project_id);
+        "#,
+        },
+        Migration {
+            version: 5,
+            description: "dedupe_results_by_task",
+            kind: MigrationKind::Up,
+            sql: r#"
+            DELETE FROM results WHERE rowid NOT IN (SELECT MAX(rowid) FROM results GROUP BY task_id);
+        "#,
+        },
     ]
 }
 
@@ -199,6 +215,7 @@ pub fn run() {
             project::import_asset,
             project::import_global_asset,
             project::delete_global_asset_file,
+            project::delete_project_result_file,
             project::save_canvas_document,
             segmentation::segment_image,
         ])

@@ -5,8 +5,8 @@ import { AgentPanel } from "../components/AgentPanel";
 import { Button, CheckBox, SectionTitle } from "../components/ui";
 import { getPlatformDimensions, supportedPlatforms, type SupportedPlatform } from "../data/platformPresets";
 import { estimateUnitPrice, formatYuan } from "../lib/billing";
-import { hasTauriRuntime, importAsset } from "../lib/desktop";
-import { addAssetRecord, getProjectPath, listCustomGenerationTypes, listGlobalAssets, loadSettingJson, saveGeneratedTasks, type GlobalAssetRecord } from "../lib/database";
+import { desktopErrorMessage, hasTauriRuntime, importAsset } from "../lib/desktop";
+import { addAssetRecord, deleteProjectAssetsNotIn, getProjectPath, listCustomGenerationTypes, listGlobalAssets, listProjectAssets, loadSettingJson, saveGeneratedTasks, type GlobalAssetRecord } from "../lib/database";
 import { fileToDataUrl, runGenerationPipeline } from "../lib/generationPipeline";
 import { validateImageFiles } from "../lib/imageFiles";
 import { useAppStore } from "../store/appStore";
@@ -15,6 +15,10 @@ import type { GenerationType } from "../types";
 const categories = ["3C 数码", "美妆护肤", "服饰鞋包", "食品饮料", "家居日用", "母婴玩具", "运动户外", "其他"];
 type ReferenceRole = "logo" | "package" | "detail" | "style";
 type ReferenceFiles = Record<ReferenceRole, File[]>;
+/** assets 表中主图的角色名（与素材库/selectGlobalAsset 保持一致） */
+const MAIN_ASSET_ROLE = "product";
+const REFERENCE_ROLES: ReferenceRole[] = ["logo", "package", "detail", "style"];
+const pathBasename = (value: string) => value.split(/[\\/]/).pop() ?? value;
 
 export function GenerationWorkbench() {
   const builtinTypes = useAppStore((state) => state.generationTypes);
@@ -38,6 +42,65 @@ export function GenerationWorkbench() {
   const [customTypes, setCustomTypes] = useState<GenerationType[]>([]);
   const [globalAssets, setGlobalAssets] = useState<GlobalAssetRecord[]>([]);
   const [globalPickerOpen, setGlobalPickerOpen] = useState(false);
+  /** 已落库到项目 assets 的素材：role → (文件显示名 → 项目内路径)，用于移除时同步清理记录 */
+  const persistedAssetPaths = useRef<Map<string, Map<string, string>>>(new Map());
+  const recordPersistedAsset = (role: string, name: string, path: string) => {
+    let byName = persistedAssetPaths.current.get(role);
+    if (!byName) {
+      byName = new Map();
+      persistedAssetPaths.current.set(role, byName);
+    }
+    byName.set(name, path);
+  };
+  /** 当前生效的素材变更后，删除该角色下已不在保留集合中的 assets 记录（Tauri 模式） */
+  const syncPersistedAssets = async (role: string, files: File[]) => {
+    if (!hasTauriRuntime()) return;
+    const byName = persistedAssetPaths.current.get(role);
+    if (!byName) return;
+    const keep = files.map((file) => byName.get(file.name)).filter((path): path is string => Boolean(path));
+    await deleteProjectAssetsNotIn(role, keep);
+  };
+
+  /** 用项目内已落库的图片路径重建浏览器 File（读文件由 fs 插件完成，已在 capabilities 中放开读取范围） */
+  const localFileFromPath = async (path: string, name: string, mime: string) => {
+    const { readFile } = await import("@tauri-apps/plugin-fs");
+    return new File([await readFile(path)], name, { type: mime });
+  };
+
+  /** 原生文件对话框选择图片：Tauri 模式下拿到真实路径 → 复制进项目并落库，浏览器模式回退到隐藏 input */
+  const pickViaDialog = async (role: ReferenceRole | typeof MAIN_ASSET_ROLE, max: number) => {
+    if (!hasTauriRuntime()) return;
+    if (!currentProject) {
+      notify("请先打开一个项目");
+      return;
+    }
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({
+        multiple: max > 1,
+        filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp"] }],
+      });
+      const chosen: string[] = selected === null ? [] : Array.isArray(selected) ? selected : [selected];
+      const paths = chosen.slice(0, max);
+      if (!paths.length) return;
+      setSubmitting(true);
+      const projectPath = await getProjectPath();
+      if (!projectPath) throw new Error("当前项目目录不可用");
+      const files = await Promise.all(paths.map(async (sourcePath) => {
+        const imported = await importAsset(projectPath, sourcePath, role);
+        await addAssetRecord(role, imported.path, imported.sha256, imported.mime);
+        const name = pathBasename(imported.path);
+        recordPersistedAsset(role, name, imported.path);
+        return localFileFromPath(imported.path, name, imported.mime);
+      }));
+      if (role === MAIN_ASSET_ROLE) await acceptMainFiles(files);
+      else await acceptReferenceFiles(role, [...referenceFiles[role], ...files]);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "导入图片失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
   const mainPreview = useMemo(() => mainFile ? URL.createObjectURL(mainFile) : null, [mainFile]);
   const types = useMemo(() => [...builtinTypes, ...customTypes], [builtinTypes, customTypes]);
 
@@ -50,10 +113,11 @@ export function GenerationWorkbench() {
     let cancelled = false;
     const load = async () => {
       try {
-        const [savedTypes, assets, defaults] = await Promise.all([
+        const [savedTypes, assets, defaults, projectAssets] = await Promise.all([
           listCustomGenerationTypes(),
           listGlobalAssets(),
           loadSettingJson<{ resolution: "1k" | "2k" | "4k"; concurrency: number }>("generation_defaults"),
+          listProjectAssets(),
         ]);
         if (cancelled) return;
         setCustomTypes(savedTypes.map((type) => ({
@@ -71,6 +135,16 @@ export function GenerationWorkbench() {
         if (defaults) {
           setResolution(defaults.resolution);
           setConcurrency(Math.min(4, Math.max(1, defaults.concurrency)));
+        }
+        // 恢复上次会话已落库的主图/参考图：assets 表存的是项目内路径，读回文件后回填状态
+        for (const asset of projectAssets) recordPersistedAsset(asset.role, pathBasename(asset.path), asset.path);
+        const main = projectAssets.find((asset) => asset.role === MAIN_ASSET_ROLE);
+        if (main) setMainFile(await localFileFromPath(main.path, pathBasename(main.path), main.mime));
+        for (const role of REFERENCE_ROLES) {
+          const roleAssets = projectAssets.filter((asset) => asset.role === role);
+          if (!roleAssets.length) continue;
+          const restored = await Promise.all(roleAssets.map((asset) => localFileFromPath(asset.path, pathBasename(asset.path), asset.mime)));
+          setReferenceFiles((state) => ({ ...state, [role]: restored }));
         }
       } catch (error) {
         notify(error instanceof Error ? error.message : "读取生成配置失败");
@@ -118,11 +192,13 @@ export function GenerationWorkbench() {
   const acceptMainFiles = async (files: File[]) => {
     if (!files.length) {
       setMainFile(null);
+      void syncPersistedAssets(MAIN_ASSET_ROLE, []);
       return;
     }
     try {
       await validateImageFiles([files[0]], referenceBytes);
       setMainFile(files[0]);
+      void syncPersistedAssets(MAIN_ASSET_ROLE, [files[0]]);
     } catch (error) {
       notify(error instanceof Error ? error.message : "图片校验失败");
     }
@@ -132,6 +208,7 @@ export function GenerationWorkbench() {
     const current = referenceFiles[role];
     if (files.length < current.length) {
       setReferenceFiles((state) => ({ ...state, [role]: files }));
+      void syncPersistedAssets(role, files);
       return;
     }
     const otherBytes = (mainFile?.size ?? 0) + referenceBytes - current.reduce((sum, file) => sum + file.size, 0);
@@ -139,14 +216,10 @@ export function GenerationWorkbench() {
     try {
       await validateImageFiles(files, otherBytes, otherCount);
       setReferenceFiles((state) => ({ ...state, [role]: files }));
+      void syncPersistedAssets(role, files);
     } catch (error) {
       notify(error instanceof Error ? error.message : "图片校验失败");
     }
-  };
-
-  const localFileFromPath = async (path: string, name: string, mime: string) => {
-    const { readFile } = await import("@tauri-apps/plugin-fs");
-    return new File([await readFile(path)], name, { type: mime });
   };
 
   const selectGlobalAsset = async (asset: GlobalAssetRecord) => {
@@ -161,6 +234,7 @@ export function GenerationWorkbench() {
       const role = (["product", "logo", "package", "detail", "style"].includes(asset.role) ? asset.role : "style") as "product" | ReferenceRole;
       const imported = await importAsset(projectPath, asset.path, role);
       await addAssetRecord(role, imported.path, imported.sha256, imported.mime);
+      recordPersistedAsset(role, asset.name, imported.path);
       const file = await localFileFromPath(imported.path, asset.name, imported.mime);
       if (role === "product") await acceptMainFiles([file]);
       else await acceptReferenceFiles(role, [...referenceFiles[role], file]);
@@ -181,7 +255,8 @@ export function GenerationWorkbench() {
     if (!mainFile) {
       notify("请先上传一张真实的主产品图");
       setConfirmOpen(false);
-      fileInput.current?.click();
+      if (hasTauriRuntime()) void pickViaDialog(MAIN_ASSET_ROLE, 1);
+      else fileInput.current?.click();
       return;
     }
     if (!currentProject) {
@@ -203,13 +278,18 @@ export function GenerationWorkbench() {
       }
       const referenceImageDataUrls = await Promise.all([...Object.values(referenceFiles).flat(), ...automaticReferenceFiles].map(fileToDataUrl));
       const tasks = await runGenerationPipeline({ imageDataUrl, referenceImageDataUrls, platform, category, customBrief, types, targetDimensions, concurrency, resolution });
-      await saveGeneratedTasks(tasks, platform, category);
+      // 云端已受理即先入任务中心，本地落库失败不再阻断展示（否则任务会"提交了却不显示"）
       addTasks(tasks);
       setConfirmOpen(false);
-      notify(`已提交 ${tasks.length} 个生成任务`);
       setScreen("tasks");
+      try {
+        await saveGeneratedTasks(tasks, platform, category);
+        notify(`已提交 ${tasks.length} 个生成任务`);
+      } catch (error) {
+        notify(`已提交 ${tasks.length} 个生成任务，但本地记录保存失败：${desktopErrorMessage(error, "数据库写入失败")}`);
+      }
     } catch (error) {
-      notify(error instanceof Error ? error.message : "生成任务提交失败");
+      notify(desktopErrorMessage(error, "生成任务提交失败"));
     } finally {
       setSubmitting(false);
     }
@@ -221,12 +301,12 @@ export function GenerationWorkbench() {
       <aside className="context-sidebar material-sidebar">
         <div className="material-sidebar__title"><SectionTitle>本次素材</SectionTitle><button onClick={() => setGlobalPickerOpen(true)}><Library size={14} /> 从素材库选择</button></div>
         <input ref={fileInput} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void acceptMainFiles(Array.from(event.target.files ?? []))} />
-        <button className="drop-zone" onClick={() => fileInput.current?.click()}><Plus size={18} /> 添加主产品图</button>
-        <AssetSection title="主产品图" files={mainFile ? [mainFile] : []} max={1} size="large" inputRef={fileInput} onFiles={acceptMainFiles} />
-        <AssetSection title="Logo" files={referenceFiles.logo} max={1} onFiles={(files) => acceptReferenceFiles("logo", files)} />
-        <AssetSection title="包装" files={referenceFiles.package} max={4} onFiles={(files) => acceptReferenceFiles("package", files)} />
-        <AssetSection title="细节图" files={referenceFiles.detail} max={8} onFiles={(files) => acceptReferenceFiles("detail", files)} />
-        <AssetSection title="风格参考" files={referenceFiles.style} max={4} onFiles={(files) => acceptReferenceFiles("style", files)} />
+        <button className="drop-zone" onClick={() => { if (hasTauriRuntime()) void pickViaDialog(MAIN_ASSET_ROLE, 1); else fileInput.current?.click(); }}><Plus size={18} /> 添加主产品图</button>
+        <AssetSection title="主产品图" files={mainFile ? [mainFile] : []} max={1} size="large" inputRef={fileInput} onFiles={acceptMainFiles} onDialogPick={hasTauriRuntime() ? () => void pickViaDialog(MAIN_ASSET_ROLE, 1) : undefined} />
+        <AssetSection title="Logo" files={referenceFiles.logo} max={1} onFiles={(files) => acceptReferenceFiles("logo", files)} onDialogPick={hasTauriRuntime() ? () => void pickViaDialog("logo", 1) : undefined} />
+        <AssetSection title="包装" files={referenceFiles.package} max={4} onFiles={(files) => acceptReferenceFiles("package", files)} onDialogPick={hasTauriRuntime() ? () => void pickViaDialog("package", 4) : undefined} />
+        <AssetSection title="细节图" files={referenceFiles.detail} max={8} onFiles={(files) => acceptReferenceFiles("detail", files)} onDialogPick={hasTauriRuntime() ? () => void pickViaDialog("detail", 8) : undefined} />
+        <AssetSection title="风格参考" files={referenceFiles.style} max={4} onFiles={(files) => acceptReferenceFiles("style", files)} onDialogPick={hasTauriRuntime() ? () => void pickViaDialog("style", 4) : undefined} />
       </aside>
 
       <section className="workspace generation-workspace">
@@ -311,13 +391,13 @@ export function GenerationWorkbench() {
 
 const assetRoleLabelSafe = (role: string) => ({ product: "主图", logo: "Logo", package: "包装", detail: "细节图", style: "风格参考" }[role] ?? role);
 
-function AssetSection({ title, files, max, size, inputRef, onFiles }: { title: string; files: File[]; max: number; size?: "large"; inputRef?: React.RefObject<HTMLInputElement | null>; onFiles: (files: File[]) => void | Promise<void> }) {
+function AssetSection({ title, files, max, size, inputRef, onFiles, onDialogPick }: { title: string; files: File[]; max: number; size?: "large"; inputRef?: React.RefObject<HTMLInputElement | null>; onFiles: (files: File[]) => void | Promise<void>; onDialogPick?: () => void }) {
   const localInput = useRef<HTMLInputElement | null>(null);
   const previews = useMemo(() => files.map((file) => ({ file, url: URL.createObjectURL(file) })), [files]);
 
   useEffect(() => () => previews.forEach(({ url }) => URL.revokeObjectURL(url)), [previews]);
 
-  const openPicker = () => (inputRef?.current ?? localInput.current)?.click();
+  const openPicker = () => { if (onDialogPick) onDialogPick(); else (inputRef?.current ?? localInput.current)?.click(); };
   const addFiles = (selected: FileList | null) => {
     if (!selected) return;
     void onFiles([...files, ...Array.from(selected)].slice(0, max));

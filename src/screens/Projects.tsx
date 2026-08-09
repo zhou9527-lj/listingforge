@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FilePlus2, Folder, FolderOpen, Pencil, Trash2, X } from "lucide-react";
+import { AlertTriangle, FilePlus2, Folder, FolderOpen, Pencil, RefreshCw, Trash2, X } from "lucide-react";
 import { Button, SectionTitle } from "../components/ui";
 import { desktopErrorMessage, hasTauriRuntime } from "../lib/desktop";
 import {
@@ -18,6 +18,15 @@ const formatTime = (value: string) => {
   return date.toLocaleString("zh-CN", { hour12: false });
 };
 
+/** 项目列表查询 + 15 秒超时兜底：打包版出现过该查询挂起导致"正在读取本地项目…"永不消失，超时后转为错误态可重试。 */
+const listProjectsWithTimeout = (): Promise<ProjectRecord[]> =>
+  Promise.race([
+    listProjects(),
+    new Promise<never>((_, reject) => {
+      window.setTimeout(() => reject(new Error("读取项目列表超时，请重试")), 15000);
+    }),
+  ]);
+
 export function Projects() {
   const notify = useAppStore((state) => state.notify);
   const openProject = useAppStore((state) => state.openProject);
@@ -26,6 +35,7 @@ export function Projects() {
   const consumeProjectCreator = useAppStore((state) => state.consumeProjectCreator);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [renameTarget, setRenameTarget] = useState<ProjectRecord | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ProjectRecord | null>(null);
@@ -40,15 +50,33 @@ export function Projects() {
     }
   };
 
+  // 重试走事件处理器；挂载加载见下方 effect（避免在 effect 内同步 setState）
+  const retry = async () => {
+    if (!hasTauriRuntime()) return;
+    setLoading(true);
+    setLoadError(null);
+    try {
+      setProjects(await listProjectsWithTimeout());
+    } catch (error) {
+      setLoadError(desktopErrorMessage(error, "读取项目列表失败"));
+      notify(desktopErrorMessage(error, "读取项目列表失败"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!hasTauriRuntime()) return;
     let cancelled = false;
     const load = async () => {
       try {
-        const list = await listProjects();
+        const list = await listProjectsWithTimeout();
         if (!cancelled) setProjects(list);
       } catch (error) {
-        if (!cancelled) notify(desktopErrorMessage(error, "读取项目列表失败"));
+        if (!cancelled) {
+          setLoadError(desktopErrorMessage(error, "读取项目列表失败"));
+          notify(desktopErrorMessage(error, "读取项目列表失败"));
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -92,6 +120,13 @@ export function Projects() {
           </div>
         ) : loading ? (
           <div className="empty-state"><p>正在读取本地项目…</p></div>
+        ) : loadError ? (
+          <div className="empty-state">
+            <AlertTriangle size={40} strokeWidth={1.4} />
+            <h3>读取项目列表失败</h3>
+            <p>{loadError}</p>
+            <Button icon={<RefreshCw size={16} />} onClick={() => void retry()}>重试</Button>
+          </div>
         ) : projects.length === 0 ? (
           <div className="empty-state">
             <Folder size={40} strokeWidth={1.4} />

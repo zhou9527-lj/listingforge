@@ -20,6 +20,10 @@ const getDatabase = async () => {
       const database = await Database.load(DATABASE_URL);
       await database.execute("PRAGMA foreign_keys = ON");
       return database;
+    }).catch((error) => {
+      // 连接建立失败时丢弃缓存，下次调用重新尝试；否则该 Promise 永远保持 rejected 无法恢复
+      databasePromise = null;
+      throw error;
     });
   }
   return databasePromise;
@@ -44,29 +48,26 @@ export interface ProjectRecord {
   taskCount: number;
 }
 
+/** 项目列表查询：LEFT JOIN 聚合代替关联子查询，规避打包版中关联子查询执行路径偶发挂起的问题（见开发进度 2026-08-09 第二十二次）。 */
+const PROJECT_LIST_SQL = `SELECT p.id, p.name, p.path, p.platform, p.category,
+       p.created_at AS createdAt, p.updated_at AS updatedAt,
+       COUNT(DISTINCT a.id) AS assetCount,
+       COUNT(DISTINCT t.id) AS taskCount
+     FROM projects p
+     LEFT JOIN assets a ON a.project_id = p.id
+     LEFT JOIN tasks t ON t.project_id = p.id
+     GROUP BY p.id`;
+
 export async function listProjects(): Promise<ProjectRecord[]> {
   const database = await getDatabase();
   if (!database) return [];
-  return database.select<ProjectRecord[]>(
-    `SELECT p.id, p.name, p.path, p.platform, p.category,
-       p.created_at AS createdAt, p.updated_at AS updatedAt,
-       (SELECT COUNT(*) FROM assets a WHERE a.project_id = p.id) AS assetCount,
-       (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS taskCount
-     FROM projects p ORDER BY p.updated_at DESC`,
-  );
+  return database.select<ProjectRecord[]>(`${PROJECT_LIST_SQL} ORDER BY p.updated_at DESC`);
 }
 
 export async function getProjectRecord(id: string): Promise<ProjectRecord | null> {
   const database = await getDatabase();
   if (!database) return null;
-  const rows = await database.select<ProjectRecord[]>(
-    `SELECT p.id, p.name, p.path, p.platform, p.category,
-       p.created_at AS createdAt, p.updated_at AS updatedAt,
-       (SELECT COUNT(*) FROM assets a WHERE a.project_id = p.id) AS assetCount,
-       (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS taskCount
-     FROM projects p WHERE p.id = ? LIMIT 1`,
-    [id],
-  );
+  const rows = await database.select<ProjectRecord[]>(`${PROJECT_LIST_SQL} WHERE p.id = ? LIMIT 1`, [id]);
   return rows[0] ?? null;
 }
 
@@ -184,9 +185,8 @@ const ensureActiveProjectMeta = async (platform: string, category: string) => {
   return database;
 };
 
-export async function saveGeneratedTasks(tasks: TaskItem[], platform: string, category: string) {
-  const database = await ensureActiveProjectMeta(platform, category);
-  if (!database) return;
+/** 任务行批量写入（upsert），供生成提交与局部编辑共用；调用方自行保证项目上下文有效。 */
+const insertTaskRows = async (database: import("@tauri-apps/plugin-sql").default, tasks: TaskItem[]) => {
   const now = new Date().toISOString();
   for (const task of tasks) {
     await database.execute(
@@ -206,6 +206,21 @@ export async function saveGeneratedTasks(tasks: TaskItem[], platform: string, ca
       ],
     );
   }
+};
+
+export async function saveGeneratedTasks(tasks: TaskItem[], platform: string, category: string) {
+  const database = await ensureActiveProjectMeta(platform, category);
+  if (!database) return;
+  await insertTaskRows(database, tasks);
+}
+
+/** 单条任务落库（画布局部编辑等非生成流程）；未打开项目或数据库不可用时静默跳过。 */
+export async function saveTaskRecord(task: TaskItem): Promise<void> {
+  const database = await getDatabase();
+  if (!database) return;
+  const projectPath = await getProjectPath();
+  if (!projectPath) return;
+  await insertTaskRows(database, [task]);
 }
 
 export async function updatePersistedTask(id: string, patch: Partial<TaskItem>) {
@@ -232,6 +247,38 @@ export async function deleteCompletedTasks(): Promise<number> {
     [activeProjectId],
   );
   return result.rowsAffected;
+}
+
+/** 删除时需同步清理的本地结果文件引用 */
+export interface ResultFileRef {
+  id: string;
+  localPath: string | null;
+}
+
+/** 删除单个任务：results 由外键 ON DELETE CASCADE 级联清理，返回其关联的本地结果文件供调用方删除磁盘文件。 */
+export async function deleteTaskRecord(id: string): Promise<ResultFileRef[]> {
+  const database = await getDatabase();
+  if (!database) return [];
+  const rows = await database.select<Array<{ id: string; local_path: string | null }>>(
+    "SELECT id, local_path FROM results WHERE task_id = ?",
+    [id],
+  );
+  await database.execute("DELETE FROM tasks WHERE id = ? AND project_id = ?", [id, activeProjectId]);
+  return rows.map((row) => ({ id: row.id, localPath: row.local_path }));
+}
+
+/** 删除若干结果记录（不删除任务），返回其本地文件引用。 */
+export async function deleteResultRecords(ids: string[]): Promise<ResultFileRef[]> {
+  const database = await getDatabase();
+  if (!database) return [];
+  if (!ids.length) return [];
+  const placeholders = ids.map(() => "?").join(", ");
+  const rows = await database.select<Array<{ id: string; local_path: string | null }>>(
+    `SELECT id, local_path FROM results WHERE id IN (${placeholders})`,
+    ids,
+  );
+  await database.execute(`DELETE FROM results WHERE id IN (${placeholders})`, ids);
+  return rows.map((row) => ({ id: row.id, localPath: row.local_path }));
 }
 
 interface UiSettings {
@@ -315,6 +362,7 @@ const ROLE_LABELS: Record<string, string> = {
   package: "包装",
   detail: "细节图",
   style: "风格参考",
+  canvas: "画布素材",
 };
 
 export const assetRoleLabel = (role: string) => ROLE_LABELS[role] ?? role;
@@ -341,6 +389,22 @@ export async function deleteAssetRecord(id: string): Promise<void> {
   const database = await getDatabase();
   if (!database) return;
   await database.execute("DELETE FROM assets WHERE id = ? AND project_id = ?", [id, activeProjectId]);
+}
+
+/** 删除某角色下不在 keepPaths 中的素材记录：用户在生成页移除主图/参考图时同步清理，避免下次打开时"删掉的图又出现"。 */
+export async function deleteProjectAssetsNotIn(role: string, keepPaths: string[]): Promise<void> {
+  const database = await getDatabase();
+  if (!database) return;
+  const rows = await database.select<Array<{ id: string; path: string }>>(
+    "SELECT id, path FROM assets WHERE project_id = ? AND role = ?",
+    [activeProjectId, role],
+  );
+  const keep = new Set(keepPaths);
+  for (const row of rows) {
+    if (!keep.has(row.path)) {
+      await database.execute("DELETE FROM assets WHERE id = ?", [row.id]);
+    }
+  }
 }
 
 export interface GlobalAssetRecord {
@@ -605,10 +669,11 @@ export async function findDownloadedResult(taskId: string): Promise<string | nul
 export async function saveDownloadedResult(taskId: string, remoteUrl: string, localPath: string) {
   const database = await getDatabase();
   if (!database) return;
+  // 同一任务只保留一条结果记录：先清旧行再插入（task 级幂等，避免轮询重复下载时每轮插一行）
+  await database.execute("DELETE FROM results WHERE task_id = ?", [taskId]);
   await database.execute(
     `INSERT INTO results (id, task_id, remote_url, local_path, expires_at, quality_score, selected)
-     VALUES (?, ?, ?, ?, NULL, NULL, 0)
-     ON CONFLICT(id) DO UPDATE SET remote_url = excluded.remote_url, local_path = excluded.local_path`,
+     VALUES (?, ?, ?, ?, NULL, NULL, 0)`,
     [createId(), taskId, remoteUrl, localPath],
   );
 }
@@ -620,6 +685,7 @@ export async function loadPersistedResults(): Promise<ResultRow[]> {
     `SELECT r.id, r.task_id, t.title AS task_title, r.remote_url, r.local_path, t.created_at
      FROM results r JOIN tasks t ON t.id = r.task_id
      WHERE t.project_id = ? AND r.local_path IS NOT NULL
+       AND r.rowid = (SELECT MAX(r2.rowid) FROM results r2 WHERE r2.task_id = r.task_id)
      ORDER BY r.rowid DESC`,
     [activeProjectId],
   );

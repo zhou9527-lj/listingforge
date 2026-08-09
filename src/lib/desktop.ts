@@ -71,6 +71,9 @@ export const importGlobalAsset = (sourcePath: string) =>
 export const deleteGlobalAssetFile = (assetPath: string) =>
   invokeDesktop<void>("delete_global_asset_file", { assetPath });
 
+export const deleteProjectResultFile = (projectPath: string, filePath: string) =>
+  invokeDesktop<void>("delete_project_result_file", { projectPath, filePath });
+
 export const segmentImage = (projectPath: string, imagePath: string) =>
   invokeDesktop<{ outputPath: string; width: number; height: number; modelSha256: string }>("segment_image", { projectPath, imagePath });
 

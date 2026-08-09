@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Check, Clock3, Copy, Ellipsis, FileText, Inbox, Pause, Play, RefreshCcw, Search, Trash2, X } from "lucide-react";
 import { Button, ProgressBar, SectionTitle } from "../components/ui";
-import { downloadTaskResult, getImageTask, hasTauriRuntime } from "../lib/desktop";
-import { deleteCompletedTasks, findDownloadedResult, getProjectPath, loadSettingJson, saveDownloadedResult, saveSettingJson, updatePersistedTask } from "../lib/database";
+import { deleteProjectResultFile, downloadTaskResult, getImageTask, hasTauriRuntime } from "../lib/desktop";
+import { deleteCompletedTasks, deleteTaskRecord, findDownloadedResult, getProjectPath, loadSettingJson, saveDownloadedResult, saveSettingJson, updatePersistedTask } from "../lib/database";
 import { mapRemoteTaskStatus } from "../lib/taskPolling";
 import { useAppStore } from "../store/appStore";
 import type { TaskItem, TaskStatus } from "../types";
@@ -25,6 +25,8 @@ export function TaskCenter() {
   const retryTask = useAppStore((state) => state.retryTask);
   const updateTask = useAppStore((state) => state.updateTask);
   const clearCompletedInStore = useAppStore((state) => state.clearCompletedTasks);
+  const removeTaskFromStore = useAppStore((state) => state.removeTask);
+  const pruneResultSelection = useAppStore((state) => state.pruneResultSelection);
   const notify = useAppStore((state) => state.notify);
   const [filter, setFilter] = useState<"all" | "active" | "queued" | "completed" | "failed">("all");
   const [query, setQuery] = useState("");
@@ -32,6 +34,8 @@ export function TaskCenter() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [confirmDeleteTask, setConfirmDeleteTask] = useState<TaskItem | null>(null);
+  const [deletingTask, setDeletingTask] = useState(false);
   const selectedTask = tasks.find((task) => task.id === selectedId);
 
   useEffect(() => {
@@ -114,6 +118,30 @@ export function TaskCenter() {
     }
   };
 
+  /** 删除单条任务：先收集其关联结果文件并删除磁盘文件，再删除任务记录（results 级联清理），同时清理画布选择/收藏状态。 */
+  const deleteSingleTask = async () => {
+    const task = confirmDeleteTask;
+    if (!task) return;
+    setDeletingTask(true);
+    try {
+      const refs = await deleteTaskRecord(task.id);
+      if (hasTauriRuntime()) {
+        const projectPath = await getProjectPath();
+        if (projectPath) {
+          await Promise.all(refs.map((ref) => ref.localPath ? deleteProjectResultFile(projectPath, ref.localPath).catch(() => {}) : Promise.resolve()));
+        }
+      }
+      pruneResultSelection(refs.map((ref) => ref.id));
+      removeTaskFromStore(task.id);
+      setConfirmDeleteTask(null);
+      notify(`已删除任务「${task.title}」及其关联结果`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "删除任务失败");
+    } finally {
+      setDeletingTask(false);
+    }
+  };
+
   const copyDiagnostic = async (task: TaskItem) => {
     const text = JSON.stringify({ id: task.id, title: task.title, provider: task.provider, providerTaskId: task.providerTaskId, status: task.status, progress: task.progress, error: task.error }, null, 2);
     try {
@@ -158,15 +186,15 @@ export function TaskCenter() {
           {visibleTasks.map((task, index) => {
             const tone = task.status === "completed" ? "success" : task.status === "failed" ? "danger" : task.status === "queued" ? "local" : "accent";
             return (
-              <button key={task.id} className={`task-row ${selectedId === task.id ? "is-selected" : ""} ${task.status === "failed" ? "is-failed" : ""}`} onClick={() => selectTask(task.id)}>
+              <div key={task.id} role="button" tabIndex={0} className={`task-row ${selectedId === task.id ? "is-selected" : ""} ${task.status === "failed" ? "is-failed" : ""}`} onClick={() => selectTask(task.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectTask(task.id); } }}>
                 <div className="task-name"><b>{(Math.min(page, pageCount) - 1) * pageSize + index + 1}</b>{task.thumbnail ? <img src={task.thumbnail} alt="" /> : <span className="task-file-icon"><FileText size={20} /></span>}<span><strong>{task.title}</strong><small>{task.dimensions ?? "—"}</small></span></div>
                 <span>{task.project}</span>
                 <span>{task.provider}{task.cost === "本地" ? <em>本地</em> : null}</span>
                 <div className="task-progress"><strong className={`tone-${tone}`}>{task.status === "running" || task.status === "analyzing" ? `${task.progress}%` : statusLabels[task.status]}</strong><span>{statusLabels[task.status]}</span><ProgressBar value={task.progress} tone={tone} /></div>
                 <span>{task.cost}</span>
                 <span>{task.elapsed}</span>
-                <span className="task-actions">{task.status === "failed" ? <><i onClick={(event) => { event.stopPropagation(); retryAndPersist(task.id); }}>重试</i><i onClick={(event) => { event.stopPropagation(); selectTask(task.id); notify(task.error ?? "未记录详细错误"); }}>查看错误</i></> : task.status === "completed" ? <Check size={18} /> : <span title="云端任务不支持单项暂停"><Pause size={17} /></span>}<button aria-label="复制任务 ID" title="复制任务 ID" onClick={(event) => { event.stopPropagation(); void navigator.clipboard.writeText(task.providerTaskId ?? task.id).then(() => notify("任务 ID 已复制")); }}><Ellipsis size={17} /></button></span>
-              </button>
+                <span className="task-actions">{task.status === "failed" ? <><i onClick={(event) => { event.stopPropagation(); retryAndPersist(task.id); }}>重试</i><i onClick={(event) => { event.stopPropagation(); selectTask(task.id); notify(task.error ?? "未记录详细错误"); }}>查看错误</i></> : task.status === "completed" ? <Check size={18} /> : <span title="云端任务不支持单项暂停"><Pause size={17} /></span>}<button aria-label="复制任务 ID" title="复制任务 ID" onClick={(event) => { event.stopPropagation(); void navigator.clipboard.writeText(task.providerTaskId ?? task.id).then(() => notify("任务 ID 已复制")); }}><Ellipsis size={17} /></button><button aria-label="删除任务" title="删除任务（含结果文件）" onClick={(event) => { event.stopPropagation(); setConfirmDeleteTask(task); }}><Trash2 size={16} /></button></span>
+              </div>
             );
           })}
         </div>
@@ -187,6 +215,18 @@ export function TaskCenter() {
           </>
         )}
       </aside>
+      {confirmDeleteTask ? (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal" role="dialog" aria-modal="true" aria-label="删除任务">
+            <header><h2>删除任务</h2><button className="modal-close" aria-label="关闭" onClick={() => setConfirmDeleteTask(null)}><X size={16} /></button></header>
+            <p className="modal-warning">将删除任务「{confirmDeleteTask.title}」及其关联的结果记录与本地图片文件，不可恢复。确定继续吗？</p>
+            <footer className="modal-actions">
+              <Button onClick={() => setConfirmDeleteTask(null)}>取消</Button>
+              <Button variant="danger" disabled={deletingTask} onClick={() => void deleteSingleTask()}>{deletingTask ? "删除中…" : "确认删除"}</Button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
       {confirmClear ? <div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-label="清理已完成任务"><header><h2>清理已完成任务</h2><button className="modal-close" aria-label="关闭" onClick={() => setConfirmClear(false)}><X size={16} /></button></header><p className="modal-warning">将删除当前项目中所有“已完成”任务及其数据库关联结果记录；已导出的文件不受影响。确定继续吗？</p><footer className="modal-actions"><Button onClick={() => setConfirmClear(false)}>取消</Button><Button variant="danger" onClick={() => void clearCompleted()}>确认清理</Button></footer></section></div> : null}
     </div>
   );

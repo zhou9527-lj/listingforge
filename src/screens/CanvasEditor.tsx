@@ -1,13 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Canvas, FabricObject, Textbox } from "fabric";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { Canvas, FabricImage, FabricObject, Textbox } from "fabric";
 import {
   AlignCenter,
   AlignLeft,
   AlignRight,
   ChevronDown,
+  ChevronsDown,
+  ChevronsUp,
   Crop,
   Eye,
   Hand,
+  ImagePlus,
+  Images,
   Layers,
   LoaderCircle,
   Lock,
@@ -21,6 +25,7 @@ import {
   Trash2,
   Undo2,
   Unlock,
+  WandSparkles,
   X,
   ZoomIn,
   ZoomOut,
@@ -28,10 +33,11 @@ import {
 import { Button, IconButton, SectionTitle } from "../components/ui";
 import { getPresetSizeOptions, parseDimensionString, type CanvasSize } from "../data/platformPresets";
 import { validateEditSubmit } from "../lib/canvasEdit";
-import { getProjectPath, loadCanvasDocumentRecord, saveCanvasDocumentRecord } from "../lib/database";
-import { hasTauriRuntime, segmentImage, submitImageGeneration } from "../lib/desktop";
+import { addAssetRecord, getProjectPath, loadCanvasDocumentRecord, saveCanvasDocumentRecord, saveTaskRecord } from "../lib/database";
+import { desktopErrorMessage, hasTauriRuntime, importAsset, segmentImage, submitImageGeneration } from "../lib/desktop";
 import { exportCanvasDocument, type ExportFormat } from "../lib/exporter";
 import { useAppStore } from "../store/appStore";
+import type { TaskItem } from "../types";
 import { createId } from "../lib/ids";
 
 const pages = [
@@ -41,7 +47,7 @@ const pages = [
   { id: "detail", label: "细节 04", src: null },
 ];
 
-FabricObject.customProperties = ["name", "layerLabel"];
+FabricObject.customProperties = ["name", "layerLabel", "layerType"];
 
 const persistCanvasDocument = (canvas: Canvas, pageId: string, size: CanvasSize) => {
   if (!hasTauriRuntime()) return;
@@ -66,6 +72,7 @@ export function CanvasEditor() {
   const canvasSourcePath = useAppStore((state) => state.canvasSourcePath);
   const setCanvasSource = useAppStore((state) => state.setCanvasSource);
   const canvasSourceDimensions = useAppStore((state) => state.canvasSourceDimensions);
+  const setScreen = useAppStore((state) => state.setScreen);
   const notify = useAppStore((state) => state.notify);
   const [fontSize, setFontSize] = useState(78);
   const [opacity, setOpacity] = useState(100);
@@ -73,6 +80,11 @@ export function CanvasEditor() {
   const [visibleLayers, setVisibleLayers] = useState<Set<string>>(() => new Set());
   const [lockedLayers, setLockedLayers] = useState<Set<string>>(() => new Set());
   const [layerIds, setLayerIds] = useState<string[]>([]);
+  const [layerMeta, setLayerMeta] = useState<Record<string, { label: string; type: "text" | "image" }>>({});
+  const [importingImage, setImportingImage] = useState(false);
+  const imageInput = useRef<HTMLInputElement | null>(null);
+  const [maskGuideFlash, setMaskGuideFlash] = useState(false);
+  const maskFlashTimer = useRef<number | null>(null);
   const [toolMode, setToolMode] = useState<"select" | "crop" | "mask" | "hand">("select");
   const [selectionBounds, setSelectionBounds] = useState({ x: 0, y: 0, width: 0, height: 0 });
   const [fontFamily, setFontFamily] = useState("HarmonyOS Sans SC");
@@ -146,6 +158,10 @@ export function CanvasEditor() {
     setLayerIds(ids);
     setVisibleLayers(new Set(objects.filter((item) => item.visible !== false).map((item) => String(item.get("name")))));
     setLockedLayers(new Set(objects.filter((item) => !item.selectable).map((item) => String(item.get("name")))));
+    setLayerMeta(Object.fromEntries(objects.map((item) => [String(item.get("name")), {
+      label: String(item.get("layerLabel") ?? "图层"),
+      type: item.get("layerType") === "image" ? "image" : "text",
+    }])));
   };
 
   const syncSelection = (canvas: Canvas) => {
@@ -229,6 +245,7 @@ export function CanvasEditor() {
 
     return () => {
       if (saveTimer.current !== null) window.clearTimeout(saveTimer.current);
+      if (maskFlashTimer.current !== null) window.clearTimeout(maskFlashTimer.current);
       persistCanvasDocument(canvas, currentPage, canvasSize);
       canvas.dispose();
       canvasRef.current = null;
@@ -307,6 +324,7 @@ export function CanvasEditor() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const id = `text-${createId()}`;
+    const textCount = Object.values(layerMeta).filter((meta) => meta.type === "text").length + 1;
     const text = new Textbox("双击编辑文字", {
       name: id,
       left: Math.max(20, canvasSize.width * 0.16),
@@ -321,13 +339,123 @@ export function CanvasEditor() {
       charSpacing,
       opacity: opacity / 100,
     });
-    text.set("layerLabel", `文本 ${layerIds.length + 1}`);
+    text.set({ layerLabel: `文本 ${textCount}`, layerType: "text" });
     canvas.add(text);
     canvas.setActiveObject(text);
     setLayerIds((current) => [...current, id]);
     setVisibleLayers((current) => new Set(current).add(id));
+    setLayerMeta((current) => ({ ...current, [id]: { label: `文本 ${textCount}`, type: "text" } }));
     setSelectedLayer(id);
     syncSelection(canvas);
+    captureHistory(canvas);
+    persistCanvasDocument(canvas, currentPage, canvasSize);
+  };
+
+  /** 把图片作为可编辑图层加入画布：等比缩放居中，可移动 / 缩放 / 旋转，随画布文档持久化。 */
+  const addImageLayerFromUrl = async (url: string) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    let image: FabricImage;
+    try {
+      image = await FabricImage.fromURL(url);
+    } catch {
+      notify("图片加载失败，请换一张重试");
+      return;
+    }
+    const imageCount = Object.values(layerMeta).filter((meta) => meta.type === "image").length + 1;
+    const id = `image-${createId()}`;
+    const maxW = Math.max(120, Math.round(canvasSize.width * 0.72));
+    const maxH = Math.max(120, Math.round(canvasSize.height * 0.72));
+    const scale = Math.min(1, maxW / Math.max(1, image.width), maxH / Math.max(1, image.height));
+    image.set({
+      name: id,
+      layerType: "image",
+      layerLabel: `图片 ${imageCount}`,
+      left: Math.round((canvasSize.width - image.width * scale) / 2),
+      top: Math.round((canvasSize.height - image.height * scale) / 2),
+      scaleX: scale,
+      scaleY: scale,
+    });
+    canvas.add(image);
+    canvas.setActiveObject(image);
+    setLayerIds((current) => [...current, id]);
+    setVisibleLayers((current) => new Set(current).add(id));
+    setLayerMeta((current) => ({ ...current, [id]: { label: `图片 ${imageCount}`, type: "image" } }));
+    setSelectedLayer(id);
+    syncSelection(canvas);
+    captureHistory(canvas);
+    persistCanvasDocument(canvas, currentPage, canvasSize);
+    notify(`已添加图片图层「图片 ${imageCount}」`);
+  };
+
+  /** 桌面端：对话框多选本地图片 → 复制进项目素材（画布素材角色）→ 逐个添加为图片图层。 */
+  const pickCanvasImages = async () => {
+    if (!hasTauriRuntime()) {
+      imageInput.current?.click();
+      return;
+    }
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { convertFileSrc } = await import("@tauri-apps/api/core");
+    const picked = await open({
+      multiple: true,
+      filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "bmp", "gif"] }],
+    });
+    const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
+    if (!paths.length) return;
+    setImportingImage(true);
+    try {
+      const projectPath = await getProjectPath();
+      if (!projectPath) throw new Error("无法定位项目目录");
+      let added = 0;
+      for (const sourcePath of paths) {
+        try {
+          const imported = await importAsset(projectPath, sourcePath, "canvas");
+          await addAssetRecord("canvas", imported.path, imported.sha256, imported.mime);
+          await addImageLayerFromUrl(convertFileSrc(imported.path));
+          added += 1;
+        } catch {
+          // 单张导入失败不阻断其余图片
+        }
+      }
+      if (added) notify(`已导入 ${added} 张图片图层，拖动或缩放即可自由排版`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "导入图片失败");
+    } finally {
+      setImportingImage(false);
+    }
+  };
+
+  /** 浏览器兜底：文件输入 → Data URL → 图片图层。 */
+  const handleBrowserImageFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (!files.length) return;
+    setImportingImage(true);
+    try {
+      for (const file of files) {
+        const url = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = () => reject(new Error(`读取 ${file.name} 失败`));
+          reader.readAsDataURL(file);
+        });
+        await addImageLayerFromUrl(url);
+      }
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "导入图片失败");
+    } finally {
+      setImportingImage(false);
+    }
+  };
+
+  /** 置顶 / 置底当前选中图层（背景由 CSS 承载，画布对象内排序即可）。 */
+  const reorderActiveLayer = (direction: "front" | "back") => {
+    const canvas = canvasRef.current;
+    const object = canvas?.getActiveObject();
+    if (!canvas || !object || object.get("name") === "mask") return;
+    if (direction === "front") canvas.bringObjectToFront(object); else canvas.sendObjectToBack(object);
+    canvas.requestRenderAll();
+    syncLayers(canvas);
     captureHistory(canvas);
     persistCanvasDocument(canvas, currentPage, canvasSize);
   };
@@ -341,6 +469,7 @@ export function CanvasEditor() {
     setLayerIds((current) => current.filter((item) => item !== id));
     setVisibleLayers((current) => { const next = new Set(current); next.delete(id); return next; });
     setLockedLayers((current) => { const next = new Set(current); next.delete(id); return next; });
+    setLayerMeta((current) => { const next = { ...current }; delete next[id]; return next; });
     setSelectedLayer("");
     captureHistory(canvas);
     persistCanvasDocument(canvas, currentPage, canvasSize);
@@ -480,7 +609,18 @@ export function CanvasEditor() {
       hasMask: Boolean(canvas?.getObjects().some((item) => item.get("name") === "mask")),
     });
     if (error) {
-      notify(error);
+      if (error === "请先绘制蒙版区域") {
+        // 蒙版引导：切换到 AI 面板、自动激活蒙版笔刷并高亮按钮，避免用户在工具栏里找不到入口
+        setInspectorTab("ai");
+        setToolMode("mask");
+        setMaskMode(true);
+        if (maskFlashTimer.current !== null) window.clearTimeout(maskFlashTimer.current);
+        setMaskGuideFlash(true);
+        maskFlashTimer.current = window.setTimeout(() => setMaskGuideFlash(false), 3000);
+        notify("请先在画布上涂抹要修改的区域——蒙版笔刷已自动激活");
+      } else {
+        notify(error);
+      }
       return;
     }
     setConfirmingEdit(true);
@@ -506,7 +646,7 @@ export function CanvasEditor() {
         resolution: "1k",
         imageUrls: [editPayload.sourceDataUrl, editPayload.annotationDataUrl],
       });
-      addTasks([{
+      const task: TaskItem = {
         id: createId(),
         providerTaskId: submission.taskId,
         title: `局部编辑 · ${prompt.trim().slice(0, 16)}…`,
@@ -517,11 +657,18 @@ export function CanvasEditor() {
         progress: 0,
         cost: "待结算",
         elapsed: "00:00:00",
-      }]);
+      };
+      addTasks([task]);
       setEditConfirmOpen(false);
       notify("局部编辑任务已提交，可在任务中心查看");
+      try {
+        // 落库以便重启后仍能恢复；失败不阻断本次展示
+        await saveTaskRecord(task);
+      } catch (error) {
+        notify(`局部编辑任务已提交，但本地记录保存失败：${desktopErrorMessage(error, "数据库写入失败")}`);
+      }
     } catch (error) {
-      notify(error instanceof Error ? error.message : "提交失败");
+      notify(desktopErrorMessage(error, "提交失败"));
     } finally {
       setSubmittingEdit(false);
     }
@@ -555,7 +702,7 @@ export function CanvasEditor() {
         <div className="tool-group tool-group--modes">
           <IconButton label="选择" active={toolMode === "select"} onClick={() => { setToolMode("select"); setMaskMode(false); }}><MousePointer2 size={18} /><span>选择</span></IconButton>
           <IconButton label="裁剪" active={toolMode === "crop"} onClick={() => { setToolMode("crop"); setMaskMode(false); notify("裁剪模式：请在上方尺寸中选择目标尺寸或输入自定义尺寸"); }}><Crop size={18} /><span>裁剪</span></IconButton>
-          <IconButton label="蒙版笔刷" active={maskMode} onClick={() => { setToolMode("mask"); toggleMaskMode(); }}><Paintbrush size={18} /><span>蒙版笔刷</span></IconButton>
+          <IconButton label="蒙版笔刷" active={maskMode} className={maskGuideFlash ? "is-flash" : undefined} onClick={() => { setToolMode("mask"); toggleMaskMode(); }}><Paintbrush size={18} /><span>蒙版笔刷</span></IconButton>
           <IconButton label="抓手" active={toolMode === "hand"} onClick={() => { setToolMode("hand"); setMaskMode(false); }}><Hand size={18} /><span>抓手</span></IconButton>
           <IconButton label={segmenting ? "抠图中…" : "抠图"} onClick={() => void segmentSource()}><Scissors size={18} /><span>{segmenting ? "抠图中…" : "抠图"}</span></IconButton>
         </div>
@@ -574,16 +721,37 @@ export function CanvasEditor() {
         </div>
         <h3>图层</h3>
         <div className="layer-list">
-          {layerIds.map((id, index) => <button key={id} className={selectedLayer === id ? "is-active" : ""} onClick={() => selectLayer(id)}><TextCursorInput size={18} /><span>{`文本 ${index + 1}`}</span><i className={!visibleLayers.has(id) ? "is-hidden" : ""} onClick={(event) => { event.stopPropagation(); toggleLayer(id); }}><Eye size={16} /></i><i onClick={(event) => { event.stopPropagation(); toggleLock(id); }}>{lockedLayers.has(id) ? <Lock size={15} /> : <Unlock size={15} />}</i></button>)}
-          {layerIds.length === 0 ? <p className="layer-list__empty">暂无叠加图层，可新建文本图层；背景图仍可导出。</p> : null}
+          {layerIds.map((id, index) => {
+            const meta = layerMeta[id] ?? { label: `图层 ${index + 1}`, type: "text" as const };
+            return <button key={id} className={selectedLayer === id ? "is-active" : ""} onClick={() => selectLayer(id)}>{meta.type === "image" ? <ImagePlus size={18} /> : <TextCursorInput size={18} />}<span>{meta.label}</span><i className={!visibleLayers.has(id) ? "is-hidden" : ""} onClick={(event) => { event.stopPropagation(); toggleLayer(id); }}><Eye size={16} /></i><i onClick={(event) => { event.stopPropagation(); toggleLock(id); }}>{lockedLayers.has(id) ? <Lock size={15} /> : <Unlock size={15} />}</i></button>;
+          })}
+          {layerIds.length === 0 ? <p className="layer-list__empty">暂无叠加图层：可新建文本，或导入图片排版合成。</p> : null}
         </div>
-        <div className="layer-footer"><Button size="sm" icon={<Layers size={15} />} onClick={addTextLayer}>新建文本</Button><IconButton label="删除图层" disabled={!selectedLayer} onClick={deleteSelectedLayer}><Trash2 size={16} /></IconButton></div>
+        <div className="layer-footer">
+          <div className="layer-footer__row"><Button size="sm" icon={<Layers size={15} />} onClick={addTextLayer}>新建文本</Button><Button size="sm" icon={<ImagePlus size={15} />} disabled={importingImage} onClick={() => void pickCanvasImages()}>{importingImage ? "导入中…" : "导入图片"}</Button></div>
+          <div className="layer-footer__row"><IconButton label="置顶图层" disabled={!selectedLayer} onClick={() => reorderActiveLayer("front")}><ChevronsUp size={16} /></IconButton><IconButton label="置底图层" disabled={!selectedLayer} onClick={() => reorderActiveLayer("back")}><ChevronsDown size={16} /></IconButton><span /><IconButton label="删除图层" disabled={!selectedLayer} onClick={deleteSelectedLayer}><Trash2 size={16} /></IconButton></div>
+        </div>
       </aside>
 
       <section className="canvas-workspace">
         <div className="canvas-ruler canvas-ruler--top">{rulerMarks(canvasSize.width).map((mark) => <span key={mark}>{mark}</span>)}</div>
         <div className="canvas-ruler canvas-ruler--left">{rulerMarks(canvasSize.height).map((mark) => <span key={mark}>{mark}</span>)}</div>
-        <div className="canvas-stage" ref={stageRef}><div className={`canvas-host ${compare ? "is-comparing" : ""}`} style={{ backgroundImage: `url(${canvasBackground})`, aspectRatio: `${canvasSize.width} / ${canvasSize.height}`, width: `${zoom}%` }}><canvas ref={canvasElement} style={{ visibility: compare ? "hidden" : "visible" }} /></div></div>
+        <div className="canvas-stage" ref={stageRef}>
+          {!canvasBackground && layerIds.length === 0 ? (
+            <div className="canvas-empty">
+              <Images size={44} strokeWidth={1.4} />
+              <h3>画布还是空的</h3>
+              <p>导入一张图片开始创作：可以打开生成结果继续精修，也可以从素材库或本地导入多张图片自由排版合成。</p>
+              <div className="canvas-empty__actions">
+                <Button variant="primary" icon={<WandSparkles size={16} />} onClick={() => setScreen("results")}>从结果页选图</Button>
+                <Button icon={<Layers size={16} />} onClick={() => setScreen("materials")}>从素材库导入</Button>
+                <Button icon={<ImagePlus size={16} />} disabled={importingImage} onClick={() => void pickCanvasImages()}>{importingImage ? "导入中…" : "导入本地图片"}</Button>
+              </div>
+            </div>
+          ) : null}
+          <div className={`canvas-host ${compare ? "is-comparing" : ""}`} style={{ backgroundImage: `url(${canvasBackground})`, aspectRatio: `${canvasSize.width} / ${canvasSize.height}`, width: `${zoom}%` }}><canvas ref={canvasElement} style={{ visibility: compare ? "hidden" : "visible" }} /></div>
+        </div>
+        <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/webp,image/bmp,image/gif" multiple hidden onChange={(event) => void handleBrowserImageFiles(event)} />
         <div className="canvas-controls">
           {customSize ? <label className="custom-size-fields">宽 <input type="number" min="1" value={customWidth} onChange={(event) => setCustomWidth(Number(event.target.value))} /> px 高 <input type="number" min="1" value={customHeight} onChange={(event) => setCustomHeight(Number(event.target.value))} /> px <button onClick={applyCustomSize}>应用</button></label> : null}
           <Button size="sm" icon={<Scan size={15} />} onClick={fitCanvas}>适合画布</Button><ZoomOut size={16} /><input type="range" min="35" max="120" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /><ZoomIn size={16} /><label title="显示不含叠加图层的原始背景">对比 <input type="checkbox" checked={compare} onChange={(event) => setCompare(event.target.checked)} /></label>
@@ -611,7 +779,7 @@ export function CanvasEditor() {
           {inspectorTab === "ai" ? (
           <section className="ai-edit-section">
             <header>AI 局部编辑 <ChevronDown size={15} /></header>
-            <div className="mask-row"><span>蒙版区域</span><div className="mask-preview">{maskPreviewUrl ? <img src={maskPreviewUrl} alt="蒙版预览" /> : <><i /><i /></>}</div><IconButton label={maskMode ? "退出蒙版" : "编辑蒙版"} active={maskMode} onClick={toggleMaskMode}><Paintbrush size={16} /></IconButton>{maskPreviewUrl ? <IconButton label="清除蒙版" onClick={clearMask}><Trash2 size={16} /></IconButton> : null}</div>
+            <div className="mask-row"><span>蒙版区域</span><div className="mask-preview">{maskPreviewUrl ? <img src={maskPreviewUrl} alt="蒙版预览" /> : <><i /><i /></>}</div><IconButton label={maskMode ? "退出蒙版" : "编辑蒙版"} active={maskMode} className={maskGuideFlash ? "is-flash" : undefined} onClick={toggleMaskMode}><Paintbrush size={16} /></IconButton>{maskPreviewUrl ? <IconButton label="清除蒙版" onClick={clearMask}><Trash2 size={16} /></IconButton> : null}</div>
             <label>编辑指令<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} /><small>{prompt.length}/200</small></label>
             <Button variant="primary" className="full-width" onClick={() => void openEditConfirm()}>{confirmingEdit ? "正在准备…" : "生成局部修改"}</Button>
           </section>

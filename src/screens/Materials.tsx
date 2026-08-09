@@ -33,6 +33,7 @@ const fileName = (path: string) => path.split(/[\\/]/).pop() ?? "未命名素材
 export function Materials() {
   const notify = useAppStore((state) => state.notify);
   const currentProject = useAppStore((state) => state.currentProject);
+  const openResultInCanvas = useAppStore((state) => state.openResultInCanvas);
   const [tab, setTab] = useState<LibraryTab>("global");
   const [globalAssets, setGlobalAssets] = useState<GlobalAssetRecord[]>([]);
   const [projectAssets, setProjectAssets] = useState<AssetRecord[]>([]);
@@ -195,6 +196,12 @@ export function Materials() {
 
   const allVisibleSelected = visibleGlobal.length > 0 && visibleGlobal.every((asset) => selectedIds.includes(asset.id));
 
+  /** 把项目素材作为画布底图打开（保留本地路径，后续抠图等能力可用）。 */
+  const openInCanvas = (assetPath: string) => {
+    openResultInCanvas(convertFileSrc(assetPath), undefined, assetPath);
+    notify("已从素材库打开画布，可继续编辑或叠加排版");
+  };
+
   return (
     <div className="screen-layout screen-layout--materials">
       <section className="workspace materials-workspace">
@@ -245,7 +252,7 @@ export function Materials() {
             <div className="asset-grid asset-grid--library">
               {visibleProject.map((asset) => <article className="asset-card" key={asset.id}>
                 <button className="asset-card__thumb" onClick={() => setPreview(asset)}><img src={convertFileSrc(asset.path)} alt={fileName(asset.path)} loading="lazy" /></button>
-                <footer><span><strong title={fileName(asset.path)}>{fileName(asset.path)}</strong><small>{assetRoleLabel(asset.role)} · 仅当前项目</small></span><button aria-label="加入全局素材库" title="加入全局素材库" disabled={busy} onClick={() => void addGlobal(asset.role as Role, asset.path)}><CopyPlus size={14} /></button><button aria-label="从列表移除" onClick={() => setDeleteTarget({ kind: "project", item: asset })}><Trash2 size={14} /></button></footer>
+                <footer><span><strong title={fileName(asset.path)}>{fileName(asset.path)}</strong><small>{assetRoleLabel(asset.role)} · 仅当前项目</small></span><button aria-label="加入画布" title="加入画布作为底图继续编辑" onClick={() => openInCanvas(asset.path)}><ImagePlus size={14} /></button><button aria-label="加入全局素材库" title="加入全局素材库" disabled={busy} onClick={() => void addGlobal(asset.role as Role, asset.path)}><CopyPlus size={14} /></button><button aria-label="从列表移除" onClick={() => setDeleteTarget({ kind: "project", item: asset })}><Trash2 size={14} /></button></footer>
               </article>)}
             </div>
           ) : <Empty icon={<FolderOpen size={40} />} title="当前项目没有匹配素材" note="项目素材默认保持私有；点击卡片上的复制按钮可明确加入全局库。" />

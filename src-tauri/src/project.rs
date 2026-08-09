@@ -338,6 +338,29 @@ pub async fn delete_global_asset_file(
         .map_err(|_| "删除全局素材文件失败".to_string())
 }
 
+/// 删除项目 results/ 目录内的结果图片；仅允许结果目录内的文件，防止误删项目其他内容。
+#[tauri::command]
+pub async fn delete_project_result_file(
+    project_path: String,
+    file_path: String,
+) -> Result<(), String> {
+    let root = PathBuf::from(project_path);
+    validate_project_path(&root)?;
+    let results_dir = root.join("results");
+    let canonical_results = fs::canonicalize(&results_dir)
+        .await
+        .map_err(|_| "结果目录不存在".to_string())?;
+    let canonical_target = fs::canonicalize(&PathBuf::from(file_path))
+        .await
+        .map_err(|_| "结果文件不存在".to_string())?;
+    if !canonical_target.starts_with(&canonical_results) || !canonical_target.is_file() {
+        return Err("已拒绝删除结果目录之外的文件".to_string());
+    }
+    fs::remove_file(canonical_target)
+        .await
+        .map_err(|_| "删除结果文件失败".to_string())
+}
+
 #[tauri::command]
 pub async fn save_canvas_document(
     project_path: String,

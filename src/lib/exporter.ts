@@ -34,10 +34,18 @@ const renderLayers = async (fabricCanvas: Canvas, backgroundUrl: string, { width
   if (!backgroundContext) throw new Error("无法初始化导出画布");
   backgroundContext.drawImage(await loadImage(backgroundUrl), 0, 0, width, height);
 
+  // 蒙版笔迹是局部编辑的标注，不应出现在成品导出中：渲染叠加层时临时隐藏，完事恢复
+  const maskObjects = fabricCanvas.getObjects().filter((item) => item.get("name") === "mask" && item.visible !== false);
+  maskObjects.forEach((item) => item.set({ visible: false }));
+
   const overlay = makeCanvas(width, height);
   const overlayContext = overlay.getContext("2d", { willReadFrequently: true });
   if (!overlayContext) throw new Error("无法初始化图层画布");
-  overlayContext.drawImage(fabricCanvas.toCanvasElement(), 0, 0, width, height);
+  try {
+    overlayContext.drawImage(fabricCanvas.toCanvasElement(), 0, 0, width, height);
+  } finally {
+    maskObjects.forEach((item) => item.set({ visible: true }));
+  }
 
   const composite = makeCanvas(width, height);
   const compositeContext = composite.getContext("2d", { willReadFrequently: true });
