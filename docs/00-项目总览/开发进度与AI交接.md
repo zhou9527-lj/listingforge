@@ -90,6 +90,14 @@ tags: [商品图匠, ListingForge, 开发进度, AI交接]
 9. **设置页 6 tab 真实化**：`src/screens/ApiSettings.tsx` —— api（密钥/测试连接/余额）、defaults（生成默认值读写 SQLite settings）、storage（路径 + 打开目录）、appearance（主题/语言）、privacy（清除画布文档/导出记录/重置界面）、about（版本 + 打开仓库）；原先无反应的控件全部接通。
 10. **任务中心**：真实计数（进行中/等待/已完成/失败）、项目范围显示当前项目、提交时间改为用时、移除预算面板。
 
+### 9. 2026-08-09 追加：删除应用内部顶栏
+
+- 用户在桌面截图中用红框指定删除整条应用内部顶栏。`src/components/AppShell.tsx` 已删除 `header.topbar` 及品牌/项目名/新建/保存/设置/菜单/内部窗口控制内容和关联状态。
+- `src/styles/layout.css` 已移除 50 px 顶栏行与专用样式，主内容直接从系统原生标题栏下方开始；狭窗口遮罩的上边界也已改为 0。
+- 保留入口：项目页“新建项目”、左侧“任务/设置”导航、画布/项目自动保存。
+- 验证：本次文件 ESLint 通过，`tsc --noEmit` 通过，Vitest 串行执行 11 文件/45 测试全过。`npm run check` 首次在 ESLint 阶段因本机内存不足中止，停止本任务早先启动的 Vite 进程后分项检查成功；不是代码错误。
+- 浏览器实测 `.topbar = 0`、控制台无 error，截图已保存为 `design/implementation/13-projects-without-internal-topbar.png`。
+
 ### 3. Rust 后端
 
 - `src-tauri/src/secrets.rs`：保存、删除、检查系统凭据；只返回脱敏尾号。
@@ -166,3 +174,5 @@ tags: [商品图匠, ListingForge, 开发进度, AI交接]
 2026-08-09（第十次）：九项改造完成并推送，CI 全绿（run 31292473161：frontend + rust 两 job 全过，40 测试）。新增三个独立屏幕（项目管理器/素材库/导出中心）、多项目 SQLite v2 迁移、计费重构（`src/lib/billing.ts` 实际扣费回推单价 + 状态栏/设置页三家服务商余额分开显示 + 确认弹窗计费明细拆分，新增 5 个 billing 单测）、Agent 面板真实接入（原为静态 mock）、预算与配额全删（含文档同步）、默认空白项目（五张演示图删除）、设置页 6 tab 真实化、任务中心真实计数。提交 `abd0b5e` + `4e8628f`。桌面构建：Windows NSIS 与 macOS-14 已成功，macOS Intel（run 31277750641）仍在排队等待 runner；旧版本 `ecom-image-gen` 分支历史已并入 main。待人工推进：macOS Intel 结果确认、真 Key 三供应商联网验收、SignPath Foundation 申请。
 
 2026-08-09（第十一次）：桌面构建状态确认与最新版打包触发。**关键事实：run 31277750641 的安装包是旧代码（818e416，九项改造前），不要当作最新版发给用户。** 已触发新构建 run 31295985762（workflow_dispatch，ref=main，构建九项改造后的最新代码）：Windows NSIS 约 10 分钟、macOS-14 约 3 分钟、macOS-13 Intel 预计继续无限排队（runner 已退役）。给用户的下载地址 = 新 run 页面 artifacts 区。**待用户决策：Intel 包改成交叉编译**（Apple Silicon runner 上 `rustup target add x86_64-apple-darwin` 后按 x86_64 target 打包，Tauri 官方支持，改 `desktop-build.yml` 一个矩阵变体即可，约 10 分钟）。其余待办：新构建结果确认 → Windows 安装包地址给用户 → 真 Key 三供应商联网验收（余额/费用列才出真实数字）→ SignPath Foundation 申请。
+
+2026-08-09（第十二次）：依用户截图红框要求删除整条应用内部顶栏，只保留操作系统原生标题栏。主内容与左侧导航已上移 50 px，底部状态栏不变。保留项目页新建入口、任务/设置左导航和自动保存。验证：ESLint 定向检查、TypeScript、11 文件/45 测试通过；浏览器 `.topbar = 0`、无控制台 error。截图：`design/implementation/13-projects-without-internal-topbar.png`。

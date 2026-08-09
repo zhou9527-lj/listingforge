@@ -474,11 +474,6 @@
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
 
 /* ── 顶栏功能菜单 ───────────────────────────────────── */
-.menu-anchor { position: relative; }
-.top-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; display: flex; flex-direction: column; min-width: 170px; padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-panel); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3); }
-.top-menu button { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); font-size: 12px; cursor: pointer; text-align: left; }
-.top-menu button:hover { background: var(--bg-raised); color: var(--text-primary); }
-.top-menu__divider { height: 1px; margin: 5px 8px; background: var(--border); }
 
 @media (max-width: 1359px) {
   .editor-screen { grid-template-columns: 300px minmax(500px, 1fr) 320px; }

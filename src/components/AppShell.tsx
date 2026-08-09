@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Bot,
@@ -6,23 +6,14 @@ import {
   ExternalLink,
   Folder,
   Image as ImageIcon,
-  Info,
-  Menu,
-  Minus,
   PanelTop,
   Play,
-  Save,
   Scan,
   Settings,
-  Square,
-  X,
 } from "lucide-react";
-import { BrandMark } from "./BrandMark";
-import { IconButton, StatusDot } from "./ui";
+import { StatusDot } from "./ui";
 import { useAppStore } from "../store/appStore";
 import type { ScreenId } from "../types";
-import { hasTauriRuntime, windowAction } from "../lib/desktop";
-import { saveUiSettings, touchProjectRecord } from "../lib/database";
 
 const navItems: Array<{ id: ScreenId; labelKey: string; icon: typeof Folder }> = [
   { id: "projects", labelKey: "nav.projects", icon: Folder },
@@ -46,13 +37,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const currentProject = useAppStore((state) => state.currentProject);
   const setScreen = useAppStore((state) => state.setScreen);
   const tasks = useAppStore((state) => state.tasks);
-  const notify = useAppStore((state) => state.notify);
-  const openProjectCreator = useAppStore((state) => state.openProjectCreator);
   const providers = useAppStore((state) => state.providers);
   const providerBalances = useAppStore((state) => state.providerBalances);
-  const [menuOpen, setMenuOpen] = useState(false);
   const [clock, setClock] = useState(() => formatTime(new Date()));
-  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -68,71 +55,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => window.clearInterval(timer);
   }, []);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const closeOnOutside = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) setMenuOpen(false);
-    };
-    window.addEventListener("mousedown", closeOnOutside);
-    return () => window.removeEventListener("mousedown", closeOnOutside);
-  }, [menuOpen]);
-
   const activeTasks = tasks.filter((task) => task.status === "running" || task.status === "analyzing").length;
-
-  const handleSave = () => {
-    void (async () => {
-      try {
-        await saveUiSettings({ theme, locale });
-        if (currentProject) await touchProjectRecord(currentProject.id);
-        notify(`已保存到本地 ${formatTime(new Date())}`);
-      } catch (error) {
-        notify(error instanceof Error ? error.message : "保存失败");
-      }
-    })();
-  };
-
-  const handleMenu = (action: () => void) => {
-    setMenuOpen(false);
-    action();
-  };
-
-  const breadcrumb = screen === "settings" ? "设置" : screen === "tasks" ? "任务中心" : currentProject ? currentProject.name : "未打开项目";
 
   return (
     <div className={`app-shell app-shell--${screen}`}>
-      <header className="topbar" data-tauri-drag-region>
-        <div className="brand" data-tauri-drag-region>
-          <BrandMark className="brand__mark" />
-          <span className="brand__name">商品图匠</span>
-        </div>
-        <span className="topbar__divider" />
-        <div className="breadcrumb" data-tauri-drag-region title={currentProject?.path ?? ""}>{breadcrumb}</div>
-        <div className="topbar__actions">
-          <button className="topbar-action" onClick={openProjectCreator}> <Folder size={17} /> {t("top.newProject")}</button>
-          <button className="topbar-action" onClick={handleSave}> <Save size={17} /> {t("top.save")}</button>
-          <IconButton label="设置" onClick={() => setScreen("settings")} active={screen === "settings"}><Settings size={18} /></IconButton>
-          <div className="menu-anchor" ref={menuRef}>
-            <IconButton label="菜单" active={menuOpen} onClick={() => setMenuOpen((open) => !open)}><Menu size={18} /></IconButton>
-            {menuOpen ? (
-              <div className="top-menu" role="menu">
-                <button role="menuitem" onClick={() => handleMenu(openProjectCreator)}><Folder size={15} /> 新建项目</button>
-                <button role="menuitem" onClick={() => handleMenu(() => setScreen("projects"))}><Boxes size={15} /> 项目管理器</button>
-                <button role="menuitem" onClick={() => handleMenu(() => setScreen("tasks"))}><Play size={15} /> 任务中心</button>
-                <button role="menuitem" onClick={() => handleMenu(() => setScreen("exports"))}><ExternalLink size={15} /> 导出中心</button>
-                <button role="menuitem" onClick={() => handleMenu(() => setScreen("settings"))}><Settings size={15} /> 设置</button>
-                <div className="top-menu__divider" />
-                <button role="menuitem" onClick={() => handleMenu(() => notify(`商品图匠 0.1.0 · ${hasTauriRuntime() ? "桌面版" : "浏览器预览"}`))}><Info size={15} /> 关于</button>
-              </div>
-            ) : null}
-          </div>
-        </div>
-        <div className="window-controls">
-          <IconButton label="最小化" onClick={() => void windowAction("minimize")}><Minus size={16} /></IconButton>
-          <IconButton label="最大化或还原" onClick={() => void windowAction("toggleMaximize")}><Square size={13} /></IconButton>
-          <IconButton label="关闭" className="window-control--close" onClick={() => void windowAction("close")}><X size={17} /></IconButton>
-        </div>
-      </header>
-
       <div className="app-body">
         <nav className="app-nav" aria-label="应用导航">
           <div className="app-nav__main">
