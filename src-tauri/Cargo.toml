@@ -1,6 +1,6 @@
 [package]
 name = "listingforge"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local-first AI e-commerce image studio"
 authors = ["ListingForge Contributors"]
 license = "MIT"
@@ -38,4 +38,3 @@ thiserror = "2"
 tokio = { version = "1", features = ["fs", "sync", "time"] }
 url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
-

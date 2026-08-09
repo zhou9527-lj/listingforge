@@ -309,13 +309,13 @@ function AboutTab() {
       <h2>商品图匠 · ListingForge</h2>
       <p>AI 电商商品图生产工作台：上传素材 → Agent 规划 → 三模型协作出图 → 画布精修 → 导出。</p>
       <div className="storage-rows">
-        <label><span>版本</span><code>0.1.0（{hasTauriRuntime() ? "桌面版" : "浏览器预览"}）</code></label>
+        <label><span>版本</span><code>0.1.1（{hasTauriRuntime() ? "桌面版" : "浏览器预览"}）</code></label>
         <label><span>数据</span><code>SQLite 本地存储 · 密钥走系统凭据库</code></label>
         <label><span>项目主页</span><code>github.com/zhou9527-lj/listingforge</code></label>
       </div>
       <div className="storage-actions">
         <Button icon={<Globe size={15} />} onClick={() => void openRepo()}>打开项目主页</Button>
-        <Button icon={<Info size={15} />} onClick={() => notify("当前已是最新版本 0.1.0")}>检查更新</Button>
+        <Button icon={<Info size={15} />} onClick={() => notify("当前已是最新版本 0.1.1")}>检查更新</Button>
       </div>
     </section>
   );

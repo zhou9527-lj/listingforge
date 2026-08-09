@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { FilePlus2, Folder, FolderOpen, Pencil, Trash2, X } from "lucide-react";
 import { Button, SectionTitle } from "../components/ui";
-import { hasTauriRuntime } from "../lib/desktop";
+import { desktopErrorMessage, hasTauriRuntime } from "../lib/desktop";
 import {
   createProjectRecord,
   deleteProjectRecord,
@@ -34,7 +34,7 @@ export function Projects() {
     try {
       setProjects(await listProjects());
     } catch (error) {
-      notify(error instanceof Error ? error.message : "读取项目列表失败");
+      notify(desktopErrorMessage(error, "读取项目列表失败"));
     }
   };
 
@@ -46,7 +46,7 @@ export function Projects() {
         const list = await listProjects();
         if (!cancelled) setProjects(list);
       } catch (error) {
-        if (!cancelled) notify(error instanceof Error ? error.message : "读取项目列表失败");
+        if (!cancelled) notify(desktopErrorMessage(error, "读取项目列表失败"));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -141,7 +141,7 @@ function CreateProjectDialog({ onClose, onCreated }: { onClose: () => void; onCr
       const chosen = await open({ directory: true, defaultPath: parentPath ?? (await appDataDir()) });
       if (typeof chosen === "string") setParentPath(chosen);
     } catch (error) {
-      notify(error instanceof Error ? error.message : "选择目录失败");
+      notify(desktopErrorMessage(error, "选择目录失败"));
     }
   };
 
@@ -159,7 +159,7 @@ function CreateProjectDialog({ onClose, onCreated }: { onClose: () => void; onCr
       const project = await createProjectRecord(name.trim(), parentPath ?? (await (await import("@tauri-apps/api/path")).appDataDir()));
       if (project) onCreated(project);
     } catch (error) {
-      notify(error instanceof Error ? error.message : "创建项目失败");
+      notify(desktopErrorMessage(error, "创建项目失败"));
     } finally {
       setBusy(false);
     }
@@ -193,7 +193,7 @@ function RenameProjectDialog({ project, onClose, onRenamed }: { project: Project
       notify(`已重命名为「${name.trim()}」`);
       onRenamed();
     } catch (error) {
-      notify(error instanceof Error ? error.message : "重命名失败");
+      notify(desktopErrorMessage(error, "重命名失败"));
     } finally {
       setBusy(false);
     }
@@ -222,7 +222,7 @@ function DeleteProjectDialog({ project, onClose, onDeleted }: { project: Project
       notify(removeDirectory ? "项目及其目录文件已删除" : "项目记录已删除（目录文件保留）");
       onDeleted();
     } catch (error) {
-      notify(error instanceof Error ? error.message : "删除失败");
+      notify(desktopErrorMessage(error, "删除失败"));
     } finally {
       setBusy(false);
     }

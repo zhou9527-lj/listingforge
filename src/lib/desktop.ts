@@ -8,6 +8,13 @@ import type {
 
 export const hasTauriRuntime = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+/** Tauri invoke 会直接 reject 字符串；统一保留后端给出的可操作错误信息。 */
+export function desktopErrorMessage(error: unknown, fallback: string): string {
+  if (typeof error === "string" && error.trim()) return error.trim();
+  if (error instanceof Error && error.message.trim()) return error.message.trim();
+  return fallback;
+}
+
 export async function windowAction(action: "minimize" | "toggleMaximize" | "close") {
   if (!hasTauriRuntime()) return;
   const { getCurrentWindow } = await import("@tauri-apps/api/window");

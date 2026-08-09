@@ -69,7 +69,7 @@ async fn ensure_project_structure(root: &Path) -> Result<(), String> {
     for folder in ["assets", "results", "canvas", "exports", "logs"] {
         fs::create_dir_all(root.join(folder))
             .await
-            .map_err(|_| "创建项目目录失败".to_string())?;
+            .map_err(|error| format!("创建项目目录失败（{}）：{error}", root.display()))?;
     }
     Ok(())
 }
@@ -89,7 +89,7 @@ async fn write_manifest(root: &Path, name: &str, platform: &str, category: &str)
         serde_json::to_vec_pretty(&manifest).map_err(|_| "序列化项目清单失败".to_string())?;
     fs::write(root.join("project.json"), content)
         .await
-        .map_err(|_| "写入项目清单失败".to_string())?;
+        .map_err(|error| format!("写入项目清单失败（{}）：{error}", root.display()))?;
     Ok(())
 }
 
@@ -100,13 +100,44 @@ pub async fn create_project(request: CreateProjectRequest) -> Result<String, Str
     validate_project_path(&root)?;
     if fs::try_exists(&root)
         .await
-        .map_err(|_| "无法检查项目目录".to_string())?
+        .map_err(|error| format!("无法检查项目目录（{}）：{error}", root.display()))?
     {
         return Err("同名项目目录已存在".to_string());
     }
     ensure_project_structure(&root).await?;
     write_manifest(&root, name, &request.platform, &request.category).await?;
     Ok(root.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn creates_project_with_a_chinese_name() {
+        let parent = std::env::temp_dir().join(format!(
+            "listingforge-project-test-{}",
+            Uuid::new_v4()
+        ));
+        let request = CreateProjectRequest {
+            parent_path: parent.to_string_lossy().to_string(),
+            name: "便携榨汁杯".to_string(),
+            platform: "未指定".to_string(),
+            category: "未指定".to_string(),
+        };
+
+        let root = PathBuf::from(
+            tauri::async_runtime::block_on(create_project(request))
+                .expect("project creation should succeed"),
+        );
+        assert!(root.join("project.json").is_file());
+        for folder in ["assets", "results", "canvas", "exports", "logs"] {
+            assert!(root.join(folder).is_dir());
+        }
+
+        tauri::async_runtime::block_on(fs::remove_dir_all(&parent))
+            .expect("temporary project cleanup should succeed");
+    }
 }
 
 #[tauri::command]
