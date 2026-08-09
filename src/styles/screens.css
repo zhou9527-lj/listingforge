@@ -288,7 +288,7 @@
 .task-filters button b { min-width: 22px; height: 20px; display: grid; place-items: center; border-radius: 3px; background: var(--bg-raised); color: var(--text-muted); font-size: 10px; font-weight: 500; }
 .task-filters button.is-active { color: var(--accent); background: var(--accent-soft); }
 
-.task-workspace { display: grid; grid-template-rows: 45px 55px 54px minmax(0, 1fr) 56px; }
+.task-workspace { display: grid; grid-template-rows: 45px 55px minmax(0, 1fr) 56px; }
 .task-header { display: flex; align-items: center; padding: 0 18px; }
 .task-toolbar { display: grid; grid-template-columns: auto auto 1fr auto 290px; align-items: center; gap: 8px; padding: 0 18px; border-bottom: 1px solid var(--border); }
 .task-toolbar > label { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 11px; }
@@ -299,6 +299,13 @@
 .task-table__head { height: 42px; display: grid; grid-template-columns: minmax(220px, 1.7fr) minmax(82px, .65fr) minmax(126px, 1fr) minmax(130px, .9fr) 56px 64px 70px; align-items: center; padding: 0 10px 0 40px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 10px; }
 .task-row { width: 100%; min-height: 86px; display: grid; grid-template-columns: minmax(220px, 1.7fr) minmax(82px, .65fr) minmax(126px, 1fr) minmax(130px, .9fr) 56px 64px 70px; align-items: center; padding: 9px 10px; border-bottom: 1px solid var(--border); color: var(--text-secondary); font-size: 10px; text-align: left; }
 .task-row:hover, .task-row.is-selected { background: var(--bg-hover); }
+/* 窄窗口自动隐藏次要列（项目、用时），保证 7 列核心信息始终完整可见、无需横向滚动 */
+@media (max-width: 1435px) {
+  .task-table__head { grid-template-columns: minmax(220px, 2.2fr) minmax(126px, 1.1fr) minmax(130px, 1fr) 56px 70px; }
+  .task-row { grid-template-columns: minmax(220px, 2.2fr) minmax(126px, 1.1fr) minmax(130px, 1fr) 56px 70px; }
+  .task-table__head > span:nth-child(2), .task-table__head > span:nth-child(6),
+  .task-row > :nth-child(2), .task-row > :nth-child(6) { display: none; }
+}
 .task-row.is-failed { background: color-mix(in srgb, var(--danger) 7%, var(--bg-app)); }
 .task-name { min-width: 0; display: grid; grid-template-columns: 20px 54px minmax(0, 1fr); align-items: center; gap: 8px; }
 .task-name > b { color: var(--text-muted); font-weight: 400; }

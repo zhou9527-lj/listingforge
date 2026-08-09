@@ -180,7 +180,7 @@ export function TaskCenter() {
             <h3>任务队列是空的</h3>
             <p>在生成工作台上传主图并提交方案后，任务会出现在这里。</p>
           </div>
-        ) : null}
+        ) : (
         <div className="task-table">
           <div className="task-table__head"><span>任务</span><span>项目</span><span>提供方 / 模型</span><span>进度 / 状态</span><span>消耗</span><span>用时</span><span>操作</span></div>
           {visibleTasks.map((task, index) => {
@@ -198,6 +198,7 @@ export function TaskCenter() {
             );
           })}
         </div>
+        )}
         <footer className="task-pagination"><span>筛选结果 {filteredTasks.length} 项</span><div><button disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>‹</button><span className="is-active" aria-label={`第 ${Math.min(page, pageCount)} 页，共 ${pageCount} 页`}>{Math.min(page, pageCount)} / {pageCount}</span><button disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>›</button><select aria-label="每页数量" value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}><option value={10}>10 条/页</option><option value={20}>20 条/页</option><option value={50}>50 条/页</option></select></div></footer>
       </section>
 
