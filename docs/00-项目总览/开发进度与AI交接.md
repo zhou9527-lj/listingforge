@@ -124,6 +124,8 @@ tags: [商品图匠, ListingForge, 开发进度, AI交接]
 
 ## 五、下一位 AI 的接续顺序
 
+0. **当前状态速览（2026-08-09 第十一次）**：九项改造已全部完成并推送（main 领先 origin，共 3 个新提交），CI 全绿。正在等待：新桌面构建 run 31295985762（打包最新代码，Windows NSIS 即将完成）→ 把 Windows 安装包地址发给用户（旧 run 31277750641 的产物是改造前旧代码，勿发）。待用户决策：macOS Intel 包是否改成交叉编译。待人工推进：真 Key 三供应商联网验收、SignPath Foundation 申请。
+
 1. 先读取根目录 `AGENTS.md`、`C:\Users\Administrator\.codex\RTK.md` 和本文件；所有 shell 命令前缀 `rtk`。（根目录 `AGENTS.md` 不存在，属正常，仅依赖包内有同名文件。）
 2. [x] 为上传增加文件体积/像素与总引用图数限制，向用户显示明确错误；当前已有格式与数量限制。（2026-08-09 完成，含 `MAX_REFERENCE_COUNT = 20`。）
 3. [x] 将八大平台的尺寸预设映射到生成任务、本地裁切和导出，同时保留自定义尺寸。（2026-08-09 完成：预设字符串解析、导出尺寸参数化、画布预设/自定义尺寸选择；官方尺寸数值发布前仍需核对。）
@@ -133,7 +135,8 @@ tags: [商品图匠, ListingForge, 开发进度, AI交接]
 7. [x] 完成局部 AI 编辑的真实遮罩导出、APIMart 参考图/遮罩策略与费用确认。（2026-08-09 完成：蒙版笔刷绘制与预览、本地“原图+红色标注蒙版”合成、付费确认与提交；APIMart 无原生 mask 参数，已按参考图策略实现。未用真实 Key 联网验收。）
 8. [x] 复测 API 设置、画布六种导出和任务轮询，增加组件级测试。（2026-08-09 完成：新增 9 个测试 —— 轮询状态映射抽为纯函数 `src/lib/taskPolling.ts`（5 测）、API 设置组件级交互（4 测，mock 桌面模块验证保存/测试连接/拒绝空密钥）、局部编辑校验（4 测）。画布六种导出的 canvas 合成无法在 jsdom 中执行（无 canvas 2d），合成路径需真实浏览器/桌面验证。）
 9. [x] 更新 README、MIT LICENSE、贡献说明、GitHub Actions；创建远程仓库。（2026-08-09 完成：README/LICENSE/CONTRIBUTING/CI 就绪并经 YAML 校验；远程仓库 `https://github.com/zhou9527-lj/listingforge` 已创建（公开、默认分支 main），两个提交经 SSH 推送成功，CI 自动触发实跑正式 cargo check。**重要事实：从 Gitee 克隆的 FastAdmin 旧历史含 GitHub 无法解包的缺陷对象（客户端与服务器均报 `did not receive expected object`，SSH/HTTPS 直连/代理/重建仓库均无法修复），最终以 orphan 重建为单一根提交 `37d89db` 解决，旧历史已丢弃。** 剩余人工步骤：申请 SignPath Foundation 免费 Windows 开源签名——永远不要索要 GitHub 密码。SSH 密钥 `~/.ssh/github_ed25519` 已配置且认证通过，后续 push 走 SSH。）
-10. [x] 在内存更充足或 CI 环境运行正式 `cargo check`、`tauri build`、Windows NSIS 和 macOS 三架构构建。（2026-08-09 完成：`ci.yml` 完整特性 `cargo check` 已在 GitHub runner 实跑全绿（frontend + rust 两 job）；`desktop-build.yml` 三矩阵 `tauri build` 已就绪待手动触发，尚在用户可操作列表。**2026-08-09 追加：Windows MSI 因 productName 为中文（`商品图匠`）在 WiX light.exe 阶段失败——tauri issue #8363 仍 open 无官方修复；已改 workflow 按平台传 `--bundles`（Windows 只打 NSIS，macOS 打 app+dmg）。NSIS 对中文 productName 正常，SignPath 也支持 NSIS 签名。本地 Windows 构建同样需 `npx tauri build --bundles nsis`（或先试 `bundle.windows.wix.language: "zh-CN"` 偏方，schema 已确认该字段存在但未验证）。**）
+10. [x] 在内存更充足或 CI 环境运行正式 `cargo check`、`tauri build`、Windows NSIS 和 macOS 三架构构建。（2026-08-09 完成：`ci.yml` 完整特性 `cargo check` 已在 GitHub runner 实跑全绿（frontend + rust 两 job）；`desktop-build.yml` 三矩阵 `tauri build` 已就绪待手动触发，尚在用户可操作列表。**2026-08-09 追加：Windows MSI 因 productName 为中文（`商品图匠`）在 WiX light.exe 阶段失败——tauri issue #8363 仍 open 无官方修复；已改 workflow 按平台传 `--bundles`（Windows 只打 NSIS，macOS 打 app+dmg）。NSIS 对中文 productName 正常，SignPath 也支持 NSIS 签名。本地 Windows 构建同样需 `npx tauri build --bundles nsis`（或先试 `bundle.windows.wix.language: "zh-CN"` 偏方，schema 已确认该字段存在但未验证）。**
+**2026-08-09 再追加：三矩阵桌面构建实跑（run 31277750641，基于 818e416 旧代码）——Windows NSIS ✅、macOS-14 Apple Silicon app+dmg ✅、macOS-13 Intel ⏳ 排队超 24 小时无 runner（GitHub 已退役 macos-13 镜像，Intel 队列不再调度）。产物名 `listingforge-windows-x64`、`listingforge-macos-apple-silicon`，在 Actions run 页面 artifacts 区下载（需登录 GitHub）；命令行 `gh run download 31277750641 -n listingforge-windows-x64 -D ./dist`。安装包文件为 `商品图匠_0.1.0_x64-setup.exe`。**）
 11. [x] 九项改造（多项目/素材库/导出中心/计费重构/空白默认/设置完善）。（2026-08-09 完成，详见第二节之 8；推送后 CI 全绿。）
 12. 删除/归档临时构建目录前先确认精确路径。不要删除用户已有文件或全局 Rust 工具链。
 
@@ -161,3 +164,5 @@ tags: [商品图匠, ListingForge, 开发进度, AI交接]
 2026-08-09（第九次）：语义分层 PSD 与最终浏览器截图完成。PSD 语义分层（主标题/特性内容/图片与Logo/其他文字/形状与装饰/蒙版标注，层序自顶向下与 z 序一致，背景固定最底）已推送并经 CI 全绿（10 文件 40 测试）。浏览器截图：`scripts/screenshot.mjs`（puppeteer-core + 系统 Edge，独立 profile；注意 launch defaultViewport 在该 Edge 上序列化异常，须 goto 后 setViewport；arg 解析曾有 NaN bug 已修）在 1586×992 下捕获五主屏至 `design/implementation/08-*.png`，PIL 校验五图互异非空白、控制台无 error，已记入视觉保真记录。lint 注意：项目是 ESLint flat config（`eslint.config.js`），`/* eslint-env */` 注释已不支持；Node 脚本（scripts/*.mjs）的全局变量在配置里按文件域声明（process/console/setTimeout/document，`document` 因 `page.evaluate` 回调在浏览器上下文）。其余状态同第八次：仓库 `https://github.com/zhou9527-lj/listingforge` 公开、CI 全绿；待人工推进：手动触发 `desktop-build.yml` 打包、SignPath Foundation 申请、真 Key 联网验收。
 
 2026-08-09（第十次）：九项改造完成并推送，CI 全绿（run 31292473161：frontend + rust 两 job 全过，40 测试）。新增三个独立屏幕（项目管理器/素材库/导出中心）、多项目 SQLite v2 迁移、计费重构（`src/lib/billing.ts` 实际扣费回推单价 + 状态栏/设置页三家服务商余额分开显示 + 确认弹窗计费明细拆分，新增 5 个 billing 单测）、Agent 面板真实接入（原为静态 mock）、预算与配额全删（含文档同步）、默认空白项目（五张演示图删除）、设置页 6 tab 真实化、任务中心真实计数。提交 `abd0b5e` + `4e8628f`。桌面构建：Windows NSIS 与 macOS-14 已成功，macOS Intel（run 31277750641）仍在排队等待 runner；旧版本 `ecom-image-gen` 分支历史已并入 main。待人工推进：macOS Intel 结果确认、真 Key 三供应商联网验收、SignPath Foundation 申请。
+
+2026-08-09（第十一次）：桌面构建状态确认与最新版打包触发。**关键事实：run 31277750641 的安装包是旧代码（818e416，九项改造前），不要当作最新版发给用户。** 已触发新构建 run 31295985762（workflow_dispatch，ref=main，构建九项改造后的最新代码）：Windows NSIS 约 10 分钟、macOS-14 约 3 分钟、macOS-13 Intel 预计继续无限排队（runner 已退役）。给用户的下载地址 = 新 run 页面 artifacts 区。**待用户决策：Intel 包改成交叉编译**（Apple Silicon runner 上 `rustup target add x86_64-apple-darwin` 后按 x86_64 target 打包，Tauri 官方支持，改 `desktop-build.yml` 一个矩阵变体即可，约 10 分钟）。其余待办：新构建结果确认 → Windows 安装包地址给用户 → 真 Key 三供应商联网验收（余额/费用列才出真实数字）→ SignPath Foundation 申请。
