@@ -29,3 +29,6 @@ vite.config.d.ts
 *.njsproj
 *.sln
 *.sw?
+
+# Local release artifacts staging
+.release/
