@@ -8,6 +8,7 @@ tags: [商品图匠, ListingForge, 开发进度, AI交接]
 # 开发进度与 AI 交接
 
 > 本文是后续 AI 的第一读取入口。只记录已经发生的事实，不把规划写成已完成。任何 API Key、密码、Token 都不得写入本文或仓库。
+> **永久规则：每次代码或界面改动后，都必须把本次变动的所有内容同步写入本文与相关 docs（需求规格/界面规划/前端实现规格等），文档只记录事实。**
 
 ## 一、目标与已确认边界
 
@@ -26,13 +27,13 @@ tags: [商品图匠, ListingForge, 开发进度, AI交接]
 ### 1. 设计与文档
 
 - 五张用户已确认的生产概念图位于 `design/concepts/`，同时嵌入 Obsidian 的 `docs/02-视觉与交互/assets/`。
-- 五个核心界面已按概念图实现：生成工作台、结果复核、画布编辑器、任务中心、API 设置。
+- 八个屏幕已实现：项目管理器、素材库、生成工作台、结果复核、画布编辑器、导出中心、任务中心、设置。
 - Obsidian 已包含产品、架构、API、平台、画布、安全、测试、发布和 ADR 文档。
-- `design/demo-assets/` 与 `public/assets/demo/` 包含已生成的演示商品素材；演示素材只用于界面预览，新的生成流程不会把它冒充成用户上传图提交云端。
+- 演示素材已全部移除（第十次改造：`public/assets/demo/` 五张演示图与 `design/demo-assets/` 不再作为产品素材；应用默认空白项目启动，无任何演示图片）。
 
 ### 2. React/Tauri 前端
 
-- React/Tauri 脚手架、设计 Token、深浅主题、中文/英文状态入口、五个主屏、Agent 侧栏和任务状态交互已落地。
+- React/Tauri 脚手架、设计 Token、深浅主题、中文/英文状态入口、八个屏幕（项目管理器/素材库/生成/结果/画布/导出中心/任务中心/设置）、Agent 侧栏和任务状态交互已落地。
 - Fabric.js 画布已可选择文字、修改字号/透明度、切换图层可见性和切换页面。
 - 画布背景已改为 DOM 背景层，避免 Fabric 对 2x 密度演示图错误缩成四分之一；Fabric 只承载可编辑叠加层。
 - `src/lib/exporter.ts` 已实现本地合成与 PNG/JPG/WebP、两层 PSD、`.listingforge` ZIP 工程包、PNG 长图导出，TypeScript 构建已通过。
@@ -74,6 +75,21 @@ tags: [商品图匠, ListingForge, 开发进度, AI交接]
 - 校验逻辑抽为 `src/lib/canvasEdit.ts` 并新增 4 个测试；浏览器预览明确提示仅桌面版可用。
 - 未用真实 Key 联网验收（与生成流程一致）。
 
+### 8. 2026-08-09 追加：九项改造（多项目 / 素材库 / 导出中心 / 计费重构 / 空白默认 / 设置完善）
+
+一次九项改造全部落地并推送（提交 `abd0b5e` 九项改造、`4e8628f` 移除演示图片），CI 前端 + Rust 检查全绿（run 31292473161 success，40 测试）。
+
+1. **多项目管理（数据层）**：SQLite v2 迁移 `migrations/0002_add_projects.sql` 新增 projects 表；Rust `project.rs` 新增 `create_project` / `list_projects` / `get_project_record` / `rename_project` / `delete_project`，模块级 `activeProjectId` 决定当前项目；Zustand persist `currentProject`，旧版 `current-project` 单项目兼容自动打开。
+2. **项目管理器（新屏幕）**：`src/screens/Projects.tsx` —— 真实创建（Rust `create_project` + SQLite INSERT）、重命名、删除（可选删除目录）、打开；顶栏「新建项目」经 `openProjectCreator` 打开创建对话框；未打开项目时默认进入本屏。
+3. **素材库（新屏幕）**：`src/screens/Materials.tsx` —— 按角色（product/logo/package/detail/style）分组导入（文件选择 → `importAsset` → `addAssetRecord`），`convertFileSrc` 预览，删除，空项目空状态。
+4. **导出中心（新屏幕）**：`src/screens/ExportCenter.tsx` —— 导出画布文档（`loadCanvasDocumentRecord("main")` → plugin-fs writeFile → sha256 → `addExportRecord`）与已下载结果图片（copyFile + hash）；历史列表含删除。
+5. **Agent 面板真实化**：`src/components/AgentPanel.tsx` 重写 —— 原为静态 mock；现真实调用 `runDeepSeekAgent`（规划）与 `analyzeProduct`（商品理解，读本地结果文件转 dataURL）；步骤/消息/计划详情/评审结果均为真实状态。
+6. **计费重构（按 API 提供方实际扣费）**：`src/lib/billing.ts` 新增 —— `parseCostValue`（解析「¥0.1234」）、`estimateUnitPrice`（已完成任务实际扣费均值回推单张单价）、`formatYuan`；生成工作台页脚与确认弹窗费用改为回推预估（无数据时显示「生成后按实际扣费显示」），弹窗新增「计费明细」行（APIMart 图像生成预估 + 通义/DeepSeek 按各自实际扣费记录）；状态栏与设置页三家服务商余额分开显示（store `providerBalances`，测试连接时捕获，DeepSeek/通义无余额接口显示 —）；任务中心「消耗」列显示真实扣费（taskPolling 的 `¥{cost.toFixed(4)}`）。
+7. **预算与配额全部移除**：生成页/任务中心预算面板、配额弹窗、`budget-panel`/`budget-alert` CSS 全部删除；Agent 系统提示词不再约束预算；文档同步（需求规格/范围与成功标准/前端实现规格/界面概念评审/DeepSeek与通义千问/最终方案）。
+8. **默认空白项目**：`public/assets/demo/` 五张演示图删除；`src/data/demo.ts` 只保留生成类型与 API 提供方；结果复核/任务中心/画布全部空状态；store 初始 tasks/selectedResults 为空。
+9. **设置页 6 tab 真实化**：`src/screens/ApiSettings.tsx` —— api（密钥/测试连接/余额）、defaults（生成默认值读写 SQLite settings）、storage（路径 + 打开目录）、appearance（主题/语言）、privacy（清除画布文档/导出记录/重置界面）、about（版本 + 打开仓库）；原先无反应的控件全部接通。
+10. **任务中心**：真实计数（进行中/等待/已完成/失败）、项目范围显示当前项目、提交时间改为用时、移除预算面板。
+
 ### 3. Rust 后端
 
 - `src-tauri/src/secrets.rs`：保存、删除、检查系统凭据；只返回脱敏尾号。
@@ -100,6 +116,7 @@ tags: [商品图匠, ListingForge, 开发进度, AI交接]
 - 由于仓库路径含中文而 GNU ld 不兼容，Rust 完整依赖验证使用了 ASCII 临时目录 `E:\lfbuild-listingforge`。
 - 项目内存在 `.toolchains/`、`.build/` 与 `src-tauri/target` 构建缓存；必须加入 `.gitignore`，不要提交。
 - 本机可用虚拟内存较少；带 Wry/WebView 的全量 Tauri `cargo check` 在编译 `windows` 全特性绑定时内存中止。关闭 Tauri GUI 默认特性的后端验证已通过。不要把内存中止误判为源码错误。
+- 本机前端工具链同样不稳定：vitest worker 偶发崩溃（用 `npx vitest run --no-file-parallelism` 绕过，10 文件 40+5 测试全过）、`npm run check` 中 vite build 的 esbuild Go 二进制偶发 Go runtime panic（拆成 `npx eslint src` + `npx tsc --noEmit` + `npx vitest run --no-file-parallelism` 分别验证）。CI（GitHub Actions）为权威验证通道。
 - 曾创建 `L:` 到仓库的 `subst` 映射用于排查 Unicode 路径；交接前应删除映射。
 - 一次 rustup 环境变量赋值被 PowerShell/RTK 引号解析破坏，可能向用户已有的 `C:\Users\Administrator\.rustup` 安装了 `stable-x86_64-pc-windows-gnu`。因为此前已存在 rustup 设置，禁止擅自卸载；如需清理必须先询问用户。
 - 早期 `create-tauri-app --force` 曾删除未跟踪的 `docs/` 与 `design/`；已经如实告知用户并从生成源和确认摘要完整恢复。后续禁止再次使用强制脚手架命令。
@@ -110,14 +127,15 @@ tags: [商品图匠, ListingForge, 开发进度, AI交接]
 1. 先读取根目录 `AGENTS.md`、`C:\Users\Administrator\.codex\RTK.md` 和本文件；所有 shell 命令前缀 `rtk`。（根目录 `AGENTS.md` 不存在，属正常，仅依赖包内有同名文件。）
 2. [x] 为上传增加文件体积/像素与总引用图数限制，向用户显示明确错误；当前已有格式与数量限制。（2026-08-09 完成，含 `MAX_REFERENCE_COUNT = 20`。）
 3. [x] 将八大平台的尺寸预设映射到生成任务、本地裁切和导出，同时保留自定义尺寸。（2026-08-09 完成：预设字符串解析、导出尺寸参数化、画布预设/自定义尺寸选择；官方尺寸数值发布前仍需核对。）
-4. [x] 将任务/项目/设置真正写入 SQLite，而不只存在 Zustand；API Key 仍只走系统凭据。（任务/设置/画布文档已落库；当前项目为 `listingforge-default` 单项目模型。）
+4. [x] 将任务/项目/设置真正写入 SQLite，而不只存在 Zustand；API Key 仍只走系统凭据。（任务/设置/画布文档已落库；2026-08-09 已改造为多项目模型，见第二节之 8。）
 5. [x] 完成 APIMart 任务结果下载到本地项目 `results/`，并从真实结果库打开画布。（2026-08-09 完成 Rust 下载命令与前端轮询自动落盘、结果复核页真实结果打开画布；未用真实 Key 联网验证。）
 6. [x] 完成本地 U²-Net ONNX 抠图。（2026-08-09 完成：模型来源/哈希/Apache-2.0 已记录，Rust 命令与前端入口已实现并通过 cargo check 与前端全量测试；推理尚未实跑——需要随发布分发的 `onnxruntime.dll`。）
 7. [x] 完成局部 AI 编辑的真实遮罩导出、APIMart 参考图/遮罩策略与费用确认。（2026-08-09 完成：蒙版笔刷绘制与预览、本地“原图+红色标注蒙版”合成、付费确认与提交；APIMart 无原生 mask 参数，已按参考图策略实现。未用真实 Key 联网验收。）
 8. [x] 复测 API 设置、画布六种导出和任务轮询，增加组件级测试。（2026-08-09 完成：新增 9 个测试 —— 轮询状态映射抽为纯函数 `src/lib/taskPolling.ts`（5 测）、API 设置组件级交互（4 测，mock 桌面模块验证保存/测试连接/拒绝空密钥）、局部编辑校验（4 测）。画布六种导出的 canvas 合成无法在 jsdom 中执行（无 canvas 2d），合成路径需真实浏览器/桌面验证。）
 9. [x] 更新 README、MIT LICENSE、贡献说明、GitHub Actions；创建远程仓库。（2026-08-09 完成：README/LICENSE/CONTRIBUTING/CI 就绪并经 YAML 校验；远程仓库 `https://github.com/zhou9527-lj/listingforge` 已创建（公开、默认分支 main），两个提交经 SSH 推送成功，CI 自动触发实跑正式 cargo check。**重要事实：从 Gitee 克隆的 FastAdmin 旧历史含 GitHub 无法解包的缺陷对象（客户端与服务器均报 `did not receive expected object`，SSH/HTTPS 直连/代理/重建仓库均无法修复），最终以 orphan 重建为单一根提交 `37d89db` 解决，旧历史已丢弃。** 剩余人工步骤：申请 SignPath Foundation 免费 Windows 开源签名——永远不要索要 GitHub 密码。SSH 密钥 `~/.ssh/github_ed25519` 已配置且认证通过，后续 push 走 SSH。）
 10. [x] 在内存更充足或 CI 环境运行正式 `cargo check`、`tauri build`、Windows NSIS 和 macOS 三架构构建。（2026-08-09 完成：`ci.yml` 完整特性 `cargo check` 已在 GitHub runner 实跑全绿（frontend + rust 两 job）；`desktop-build.yml` 三矩阵 `tauri build` 已就绪待手动触发，尚在用户可操作列表。**2026-08-09 追加：Windows MSI 因 productName 为中文（`商品图匠`）在 WiX light.exe 阶段失败——tauri issue #8363 仍 open 无官方修复；已改 workflow 按平台传 `--bundles`（Windows 只打 NSIS，macOS 打 app+dmg）。NSIS 对中文 productName 正常，SignPath 也支持 NSIS 签名。本地 Windows 构建同样需 `npx tauri build --bundles nsis`（或先试 `bundle.windows.wix.language: "zh-CN"` 偏方，schema 已确认该字段存在但未验证）。**）
-11. 删除/归档临时构建目录前先确认精确路径。不要删除用户已有文件或全局 Rust 工具链。
+11. [x] 九项改造（多项目/素材库/导出中心/计费重构/空白默认/设置完善）。（2026-08-09 完成，详见第二节之 8；推送后 CI 全绿。）
+12. 删除/归档临时构建目录前先确认精确路径。不要删除用户已有文件或全局 Rust 工具链。
 
 ## 六、完成标准尚未满足
 
@@ -126,7 +144,13 @@ tags: [商品图匠, ListingForge, 开发进度, AI交接]
 - [x] 主图以外四类素材真实上传（文件大小/像素/总图数校验已补）。
 - [x] U²-Net ONNX 本地抠图和许可证记录（代码与记录完成；推理实跑依赖发布阶段的 `onnxruntime.dll` 分发）。
 - [x] 局部蒙版编辑真实调用（蒙版绘制/标注图合成/费用确认/提交入列；未联网验收，且 APIMart 无原生 mask 参数，采用“原图+红色标注参考图”策略）。
-- [ ] 真 Key 的三供应商连接测试与非付费/最小付费验收。
+- [ ] 真 Key 的三供应商连接测试与非付费/最小付费验收（真 Key 验证后余额/费用列才会出现真实数字）。
+- [x] 多项目管理（项目管理器/素材库/导出中心三个独立屏幕；顶栏新建项目真实化）。
+- [x] 计费按 API 提供方规则（实际扣费回推单价、三家服务商余额分开显示、确认弹窗计费明细拆分、billing 单测 5 个）。
+- [x] 预算与配额界面移除（界面 + 功能 + 文档同步）。
+- [x] 默认空白项目启动（演示数据与图片全部移除）。
+- [x] Agent 面板真实调用（规划经 `runDeepSeekAgent`、理解经 `analyzeProduct`）。
+- [x] 设置页 6 tab 全部控件可用。
 - [x] APIMart 完成任务下载到项目 `results/`，不依赖临时 URL（代码完成，未联网验收）。
 - [x] 完整语义分层 PSD（2026-08-09 完成：画布对象按语义分组为独立 PSD 层——主标题/特性内容/图片与Logo/其他文字/形状与装饰/蒙版标注，层序自顶向下与 z 序一致，背景固定最底；分层规划为纯函数 `src/lib/psdLayers.ts`，新增 6 测（共 40）；ag-psd children[0]=最顶层经二进制层记录解析验证；PSD 打开效果需真实桌面确认）。
 - [ ] 最终浏览器截图与跨平台打包（视觉保真记录已创建）。
@@ -135,3 +159,5 @@ tags: [商品图匠, ListingForge, 开发进度, AI交接]
 ## 七、最近一次进度更新时间
 
 2026-08-09（第九次）：语义分层 PSD 与最终浏览器截图完成。PSD 语义分层（主标题/特性内容/图片与Logo/其他文字/形状与装饰/蒙版标注，层序自顶向下与 z 序一致，背景固定最底）已推送并经 CI 全绿（10 文件 40 测试）。浏览器截图：`scripts/screenshot.mjs`（puppeteer-core + 系统 Edge，独立 profile；注意 launch defaultViewport 在该 Edge 上序列化异常，须 goto 后 setViewport；arg 解析曾有 NaN bug 已修）在 1586×992 下捕获五主屏至 `design/implementation/08-*.png`，PIL 校验五图互异非空白、控制台无 error，已记入视觉保真记录。lint 注意：项目是 ESLint flat config（`eslint.config.js`），`/* eslint-env */` 注释已不支持；Node 脚本（scripts/*.mjs）的全局变量在配置里按文件域声明（process/console/setTimeout/document，`document` 因 `page.evaluate` 回调在浏览器上下文）。其余状态同第八次：仓库 `https://github.com/zhou9527-lj/listingforge` 公开、CI 全绿；待人工推进：手动触发 `desktop-build.yml` 打包、SignPath Foundation 申请、真 Key 联网验收。
+
+2026-08-09（第十次）：九项改造完成并推送，CI 全绿（run 31292473161：frontend + rust 两 job 全过，40 测试）。新增三个独立屏幕（项目管理器/素材库/导出中心）、多项目 SQLite v2 迁移、计费重构（`src/lib/billing.ts` 实际扣费回推单价 + 状态栏/设置页三家服务商余额分开显示 + 确认弹窗计费明细拆分，新增 5 个 billing 单测）、Agent 面板真实接入（原为静态 mock）、预算与配额全删（含文档同步）、默认空白项目（五张演示图删除）、设置页 6 tab 真实化、任务中心真实计数。提交 `abd0b5e` + `4e8628f`。桌面构建：Windows NSIS 与 macOS-14 已成功，macOS Intel（run 31277750641）仍在排队等待 runner；旧版本 `ecom-image-gen` 分支历史已并入 main。待人工推进：macOS Intel 结果确认、真 Key 三供应商联网验收、SignPath Foundation 申请。

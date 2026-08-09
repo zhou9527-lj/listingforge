@@ -282,15 +282,8 @@
 .project-scopes h3 { margin: 0 0 10px; font-size: 12px; font-weight: 600; }
 .project-scopes button { width: 100%; height: 38px; padding: 0 10px; border-radius: var(--radius-sm); color: var(--text-secondary); text-align: left; }
 .project-scopes button.is-active { border: 1px solid var(--border-strong); background: var(--bg-raised); }
-.budget-panel { margin-top: auto; padding: 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--bg-raised); }
-.budget-panel header { display: flex; justify-content: space-between; margin-bottom: 14px; color: var(--text-secondary); font-size: 11px; }
-.budget-panel label { display: grid; grid-template-columns: 42px auto 1fr; align-items: center; gap: 5px; margin-top: 13px; color: var(--text-muted); font-size: 10px; }
-.budget-panel label strong { color: var(--text-primary); font-size: 13px; font-weight: 500; }
-.budget-panel .progress { grid-column: 1 / -1; margin-top: 3px; }
 
 .task-workspace { display: grid; grid-template-rows: 45px 55px 54px minmax(0, 1fr) 56px; }
-.budget-alert { display: flex; align-items: center; justify-content: space-between; padding: 0 18px; border-bottom: 1px solid color-mix(in srgb, var(--warning) 28%, var(--border)); color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, var(--bg-app)); font-size: 11px; }
-.budget-alert button { color: var(--text-muted); }
 .task-header { display: flex; align-items: center; padding: 0 18px; }
 .task-toolbar { display: grid; grid-template-columns: auto auto 1fr auto 290px; align-items: center; gap: 8px; padding: 0 18px; border-bottom: 1px solid var(--border); }
 .task-toolbar > label { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 11px; }

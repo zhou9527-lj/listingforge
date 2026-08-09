@@ -1,5 +1,5 @@
 /**
- * 五个主屏的浏览器截图脚本（开发期视觉回归）。
+ * 八个屏幕的浏览器截图脚本（开发期视觉回归）。
  * 用法：node scripts/screenshot.mjs [--width 1586] [--height 992]
  * 依赖：puppeteer-core + 系统 Edge（无需下载浏览器）
  */
@@ -32,25 +32,30 @@ page.on("pageerror", (err) => console.log("[pageerror]", err.message));
 await page.goto(base, { waitUntil: "networkidle2", timeout: 30000 });
 // 该 Edge 上 setViewport 需在页面加载后调用，否则 CDP 序列化失败
 await page.setViewport({ width, height });
-await new Promise((r) => setTimeout(r, 800));
+// 等待应用外壳渲染完成（含 hydrate 的异步 DB 加载），避免截到白屏或点击被后续渲染重置
+await page.waitForSelector(".app-shell", { timeout: 20000 });
+await new Promise((r) => setTimeout(r, 1500));
 
 /** 点击侧栏/顶栏导航切换到指定屏，再截图；selector 为 CSS 选择器 */
 async function snap(name, selector) {
   if (selector) {
     await page.evaluate((sel) => document.querySelector(sel)?.click(), selector);
-    await new Promise((r) => setTimeout(r, 600));
+    await new Promise((r) => setTimeout(r, 1000));
   }
   await page.screenshot({ path: path.join(outDir, `${name}.png`) });
   console.log("saved:", `${name}.png`);
 }
 
-// 五个主屏：默认落在生成工作台，其余经导航点击。
-// 结果/画布在 .app-nav__main 内（第 4、5 个按钮）；任务/设置在 .app-nav__footer。
-await snap(`08-${width}x${height}-01-generation-workbench`);
-await snap(`08-${width}x${height}-02-results-review`, ".app-nav__main .app-nav__item:nth-child(4)");
-await snap(`08-${width}x${height}-03-canvas-editor`, ".app-nav__main .app-nav__item:nth-child(5)");
-await snap(`08-${width}x${height}-04-task-center`, ".app-nav__footer .app-nav__item:first-child");
-await snap(`08-${width}x${height}-05-api-settings`, ".app-nav__footer .app-nav__item:nth-child(2)");
+// 八个屏幕：默认落在项目管理器（无项目时），其余经导航点击。
+// 左侧导航顺序：项目管理器/素材库/生成/结果/画布/导出中心；底部：任务中心/设置。
+await snap(`09-${width}x${height}-01-project-manager`);
+await snap(`09-${width}x${height}-02-materials`, ".app-nav__main .app-nav__item:nth-child(2)");
+await snap(`09-${width}x${height}-03-generation-workbench`, ".app-nav__main .app-nav__item:nth-child(3)");
+await snap(`09-${width}x${height}-04-results-review`, ".app-nav__main .app-nav__item:nth-child(4)");
+await snap(`09-${width}x${height}-05-canvas-editor`, ".app-nav__main .app-nav__item:nth-child(5)");
+await snap(`09-${width}x${height}-06-export-center`, ".app-nav__main .app-nav__item:nth-child(6)");
+await snap(`09-${width}x${height}-07-task-center`, ".app-nav__footer .app-nav__item:first-child");
+await snap(`09-${width}x${height}-08-api-settings`, ".app-nav__footer .app-nav__item:nth-child(2)");
 
 await browser.close();
 console.log("done");
