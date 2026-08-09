@@ -115,6 +115,57 @@ fn migrations() -> Vec<Migration> {
             ALTER TABLE tasks ADD COLUMN result_url TEXT;
         "#,
         },
+        Migration {
+            version: 3,
+            description: "add_global_assets_custom_types_and_agent_history",
+            kind: MigrationKind::Up,
+            sql: r#"
+            PRAGMA foreign_keys = ON;
+            CREATE TABLE IF NOT EXISTS global_assets (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                role TEXT NOT NULL,
+                path TEXT NOT NULL UNIQUE,
+                sha256 TEXT NOT NULL,
+                mime TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS custom_generation_types (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                purpose TEXT NOT NULL,
+                candidate_count INTEGER NOT NULL DEFAULT 1,
+                ratio TEXT NOT NULL,
+                prompt_requirements TEXT NOT NULL,
+                reference_asset_ids_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS agent_conversations (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                title TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS agent_messages (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'complete',
+                metadata_json TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(conversation_id) REFERENCES agent_conversations(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_global_assets_role ON global_assets(role);
+            CREATE INDEX IF NOT EXISTS idx_agent_conversations_project ON agent_conversations(project_id, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_agent_messages_conversation ON agent_messages(conversation_id, created_at);
+        "#,
+        },
     ]
 }
 
@@ -138,12 +189,16 @@ pub fn run() {
             api::get_image_task,
             api::download_task_result,
             api::run_deepseek_agent,
+            api::stream_deepseek_agent,
+            api::cancel_deepseek_agent,
             api::analyze_product,
             project::create_project,
             project::resolve_default_project,
             project::update_project_manifest,
             project::delete_project_directory,
             project::import_asset,
+            project::import_global_asset,
+            project::delete_global_asset_file,
             project::save_canvas_document,
             segmentation::segment_image,
         ])

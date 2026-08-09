@@ -1,6 +1,6 @@
 [package]
 name = "listingforge"
-version = "0.1.1"
+version = "0.1.2"
 description = "Local-first AI e-commerce image studio"
 authors = ["ListingForge Contributors"]
 license = "MIT"
@@ -32,7 +32,8 @@ image = "0.25"
 keyring = "4.1.5"
 ndarray = "0.17"
 ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "ndarray"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
+futures-util = "0.3"
 sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "sync", "time"] }

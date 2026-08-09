@@ -5,6 +5,7 @@ import {
   hasTauriRuntime,
   updateProjectManifest,
 } from "./desktop";
+import { createId } from "./ids";
 
 const DATABASE_URL = "sqlite:listingforge.db";
 /** 旧版本单项目模型遗留的固定项目 id；作为多项目模型的初始值兼容旧数据。 */
@@ -12,9 +13,14 @@ const LEGACY_PROJECT_ID = "current-project";
 let databasePromise: Promise<import("@tauri-apps/plugin-sql").default> | null = null;
 
 const getDatabase = async () => {
-  if (!hasTauriRuntime()) return null;
+  const internals = typeof window !== "undefined" ? (window as unknown as { __TAURI_INTERNALS__?: { invoke?: unknown } }).__TAURI_INTERNALS__ : undefined;
+  if (!hasTauriRuntime() || typeof internals?.invoke !== "function") return null;
   if (!databasePromise) {
-    databasePromise = import("@tauri-apps/plugin-sql").then(({ default: Database }) => Database.load(DATABASE_URL));
+    databasePromise = import("@tauri-apps/plugin-sql").then(async ({ default: Database }) => {
+      const database = await Database.load(DATABASE_URL);
+      await database.execute("PRAGMA foreign_keys = ON");
+      return database;
+    });
   }
   return databasePromise;
 };
@@ -68,15 +74,20 @@ export async function getProjectRecord(id: string): Promise<ProjectRecord | null
 export async function createProjectRecord(name: string, parentPath: string): Promise<ProjectRecord | null> {
   const database = await getDatabase();
   if (!database) return null;
-  const root = await createProjectDirectory(parentPath, name, "未指定", "未指定");
+  const created = await createProjectDirectory(parentPath, name, "未指定", "未指定");
   const now = new Date().toISOString();
-  const id = crypto.randomUUID();
-  await database.execute(
-    `INSERT INTO projects (id, name, path, platform, category, created_at, updated_at)
-     VALUES (?, ?, ?, '未指定', '未指定', ?, ?)`,
-    [id, name, root, now, now],
-  );
-  return { id, name, path: root, platform: "未指定", category: "未指定", createdAt: now, updatedAt: now, assetCount: 0, taskCount: 0 };
+  try {
+    await database.execute(
+      `INSERT INTO projects (id, name, path, platform, category, created_at, updated_at)
+       VALUES (?, ?, ?, '未指定', '未指定', ?, ?)`,
+      [created.id, name, created.path, now, now],
+    );
+  } catch (error) {
+    // 目录和 SQLite 记录是一个逻辑事务；写库失败时回滚本次刚创建的空项目目录。
+    await deleteProjectDirectory(created.path).catch(() => {});
+    throw error;
+  }
+  return { id: created.id, name, path: created.path, platform: "未指定", category: "未指定", createdAt: now, updatedAt: now, assetCount: 0, taskCount: 0 };
 }
 
 /** 顶栏「保存」：刷新当前项目时间戳，使其在项目列表排序靠前。 */
@@ -100,7 +111,7 @@ export async function deleteProjectRecord(id: string, path: string, removeDirect
   const database = await getDatabase();
   if (!database) return;
   if (removeDirectory) {
-    await deleteProjectDirectory(path).catch(() => {});
+    await deleteProjectDirectory(path);
   }
   await database.execute("DELETE FROM projects WHERE id = ?", [id]);
 }
@@ -213,6 +224,16 @@ export async function updatePersistedTask(id: string, patch: Partial<TaskItem>) 
   );
 }
 
+export async function deleteCompletedTasks(): Promise<number> {
+  const database = await getDatabase();
+  if (!database) return 0;
+  const result = await database.execute(
+    "DELETE FROM tasks WHERE project_id = ? AND status = 'completed'",
+    [activeProjectId],
+  );
+  return result.rowsAffected;
+}
+
 interface UiSettings {
   theme: ThemeMode;
   locale: LocaleCode;
@@ -312,7 +333,7 @@ export async function addAssetRecord(role: string, path: string, sha256: string,
   if (!database) return;
   await database.execute(
     "INSERT INTO assets (id, project_id, role, path, sha256, width, height, mime) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)",
-    [crypto.randomUUID(), activeProjectId, role, path, sha256, mime],
+    [createId(), activeProjectId, role, path, sha256, mime],
   );
 }
 
@@ -320,6 +341,226 @@ export async function deleteAssetRecord(id: string): Promise<void> {
   const database = await getDatabase();
   if (!database) return;
   await database.execute("DELETE FROM assets WHERE id = ? AND project_id = ?", [id, activeProjectId]);
+}
+
+export interface GlobalAssetRecord {
+  id: string;
+  name: string;
+  role: string;
+  path: string;
+  mime: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function listGlobalAssets(): Promise<GlobalAssetRecord[]> {
+  const database = await getDatabase();
+  if (!database) return [];
+  return database.select<GlobalAssetRecord[]>(
+    `SELECT id, name, role, path, mime, created_at AS createdAt, updated_at AS updatedAt
+     FROM global_assets ORDER BY updated_at DESC`,
+  );
+}
+
+export async function addGlobalAssetRecord(name: string, role: string, path: string, sha256: string, mime: string): Promise<void> {
+  const database = await getDatabase();
+  if (!database) return;
+  const now = new Date().toISOString();
+  await database.execute(
+    `INSERT INTO global_assets (id, name, role, path, sha256, mime, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [createId(), name, role, path, sha256, mime, now, now],
+  );
+}
+
+export async function renameGlobalAssetRecord(id: string, name: string): Promise<void> {
+  const database = await getDatabase();
+  if (!database) return;
+  await database.execute(
+    "UPDATE global_assets SET name = ?, updated_at = ? WHERE id = ?",
+    [name, new Date().toISOString(), id],
+  );
+}
+
+export async function deleteGlobalAssetRecord(id: string): Promise<void> {
+  const database = await getDatabase();
+  if (!database) return;
+  await database.execute("DELETE FROM global_assets WHERE id = ?", [id]);
+}
+
+export interface CustomGenerationTypeRecord {
+  id: string;
+  name: string;
+  purpose: string;
+  candidateCount: number;
+  ratio: "1:1" | "3:4" | "4:3" | "9:16";
+  promptRequirements: string;
+  referenceAssetIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface CustomGenerationTypeRow {
+  id: string;
+  name: string;
+  purpose: string;
+  candidateCount: number;
+  ratio: CustomGenerationTypeRecord["ratio"];
+  promptRequirements: string;
+  referenceAssetIdsJson: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+const parseStringArray = (value: string): string[] => {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+};
+
+export async function listCustomGenerationTypes(): Promise<CustomGenerationTypeRecord[]> {
+  const database = await getDatabase();
+  if (!database) return [];
+  const rows = await database.select<CustomGenerationTypeRow[]>(
+    `SELECT id, name, purpose, candidate_count AS candidateCount, ratio,
+       prompt_requirements AS promptRequirements, reference_asset_ids_json AS referenceAssetIdsJson,
+       created_at AS createdAt, updated_at AS updatedAt
+     FROM custom_generation_types ORDER BY updated_at DESC`,
+  );
+  return rows.map((row) => ({ ...row, referenceAssetIds: parseStringArray(row.referenceAssetIdsJson) }));
+}
+
+export async function saveCustomGenerationType(input: Omit<CustomGenerationTypeRecord, "createdAt" | "updatedAt">): Promise<void> {
+  const database = await getDatabase();
+  if (!database) return;
+  const now = new Date().toISOString();
+  await database.execute(
+    `INSERT INTO custom_generation_types (
+       id, name, purpose, candidate_count, ratio, prompt_requirements,
+       reference_asset_ids_json, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET name = excluded.name, purpose = excluded.purpose,
+       candidate_count = excluded.candidate_count, ratio = excluded.ratio,
+       prompt_requirements = excluded.prompt_requirements,
+       reference_asset_ids_json = excluded.reference_asset_ids_json, updated_at = excluded.updated_at`,
+    [input.id, input.name, input.purpose, input.candidateCount, input.ratio, input.promptRequirements, JSON.stringify(input.referenceAssetIds), now, now],
+  );
+}
+
+export async function deleteCustomGenerationType(id: string): Promise<void> {
+  const database = await getDatabase();
+  if (!database) return;
+  await database.execute("DELETE FROM custom_generation_types WHERE id = ?", [id]);
+}
+
+export type AgentMode = "advisor" | "operator";
+
+export interface AgentConversationRecord {
+  id: string;
+  mode: AgentMode;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentMessageRecord {
+  id: string;
+  conversationId: string;
+  role: "user" | "agent";
+  content: string;
+  status: "streaming" | "complete" | "stopped" | "failed";
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+interface AgentMessageRow extends Omit<AgentMessageRecord, "metadata"> {
+  metadataJson: string | null;
+}
+
+export async function listAgentConversations(mode?: AgentMode): Promise<AgentConversationRecord[]> {
+  const database = await getDatabase();
+  if (!database || !activeProjectId) return [];
+  const sql = `SELECT id, mode, title, created_at AS createdAt, updated_at AS updatedAt
+    FROM agent_conversations WHERE project_id = ?${mode ? " AND mode = ?" : ""} ORDER BY updated_at DESC`;
+  return database.select<AgentConversationRecord[]>(sql, mode ? [activeProjectId, mode] : [activeProjectId]);
+}
+
+export async function createAgentConversation(mode: AgentMode, title = "新对话"): Promise<AgentConversationRecord> {
+  const database = await getDatabase();
+  if (!database || !activeProjectId) throw new Error("请先打开一个项目");
+  const id = createId();
+  const now = new Date().toISOString();
+  await database.execute(
+    "INSERT INTO agent_conversations (id, project_id, mode, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+    [id, activeProjectId, mode, title, now, now],
+  );
+  return { id, mode, title, createdAt: now, updatedAt: now };
+}
+
+export async function renameAgentConversation(id: string, title: string): Promise<void> {
+  const database = await getDatabase();
+  if (!database) return;
+  await database.execute(
+    "UPDATE agent_conversations SET title = ?, updated_at = ? WHERE id = ? AND project_id = ?",
+    [title, new Date().toISOString(), id, activeProjectId],
+  );
+}
+
+export async function deleteAgentConversation(id: string): Promise<void> {
+  const database = await getDatabase();
+  if (!database) return;
+  await database.execute("DELETE FROM agent_conversations WHERE id = ? AND project_id = ?", [id, activeProjectId]);
+}
+
+export async function listAgentMessages(conversationId: string): Promise<AgentMessageRecord[]> {
+  const database = await getDatabase();
+  if (!database) return [];
+  const rows = await database.select<AgentMessageRow[]>(
+    `SELECT m.id, m.conversation_id AS conversationId, m.role, m.content, m.status,
+       m.metadata_json AS metadataJson, m.created_at AS createdAt
+     FROM agent_messages m JOIN agent_conversations c ON c.id = m.conversation_id
+     WHERE m.conversation_id = ? AND c.project_id = ? ORDER BY m.created_at ASC`,
+    [conversationId, activeProjectId],
+  );
+  return rows.map(({ metadataJson, ...row }) => ({
+    ...row,
+    metadata: metadataJson ? (() => { try { return JSON.parse(metadataJson) as Record<string, unknown>; } catch { return null; } })() : null,
+  }));
+}
+
+export async function addAgentMessage(
+  conversationId: string,
+  role: AgentMessageRecord["role"],
+  content: string,
+  status: AgentMessageRecord["status"] = "complete",
+  metadata: Record<string, unknown> | null = null,
+): Promise<AgentMessageRecord> {
+  const database = await getDatabase();
+  if (!database) throw new Error("本地数据库不可用");
+  const id = createId();
+  const now = new Date().toISOString();
+  await database.execute(
+    `INSERT INTO agent_messages (id, conversation_id, role, content, status, metadata_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [id, conversationId, role, content, status, metadata ? JSON.stringify(metadata) : null, now],
+  );
+  await database.execute("UPDATE agent_conversations SET updated_at = ? WHERE id = ?", [now, conversationId]);
+  return { id, conversationId, role, content, status, metadata, createdAt: now };
+}
+
+export async function updateAgentMessage(
+  id: string,
+  patch: Pick<AgentMessageRecord, "content" | "status"> & { metadata?: Record<string, unknown> | null },
+): Promise<void> {
+  const database = await getDatabase();
+  if (!database) return;
+  await database.execute(
+    "UPDATE agent_messages SET content = ?, status = ?, metadata_json = ? WHERE id = ?",
+    [patch.content, patch.status, patch.metadata ? JSON.stringify(patch.metadata) : null, id],
+  );
 }
 
 interface CanvasDocumentRecord {
@@ -338,7 +579,7 @@ export async function saveCanvasDocumentRecord(pageId: string, documentJson: str
      ON CONFLICT(project_id, page_id) DO UPDATE SET
        document_json = excluded.document_json, width = excluded.width, height = excluded.height,
        version = canvas_documents.version + 1, updated_at = excluded.updated_at`,
-    [crypto.randomUUID(), activeProjectId, pageId, documentJson, width, height, now],
+    [createId(), activeProjectId, pageId, documentJson, width, height, now],
   );
 }
 
@@ -348,6 +589,7 @@ interface ResultRow {
   task_title: string;
   remote_url: string | null;
   local_path: string | null;
+  created_at: string;
 }
 
 export async function findDownloadedResult(taskId: string): Promise<string | null> {
@@ -367,7 +609,7 @@ export async function saveDownloadedResult(taskId: string, remoteUrl: string, lo
     `INSERT INTO results (id, task_id, remote_url, local_path, expires_at, quality_score, selected)
      VALUES (?, ?, ?, ?, NULL, NULL, 0)
      ON CONFLICT(id) DO UPDATE SET remote_url = excluded.remote_url, local_path = excluded.local_path`,
-    [crypto.randomUUID(), taskId, remoteUrl, localPath],
+    [createId(), taskId, remoteUrl, localPath],
   );
 }
 
@@ -375,7 +617,7 @@ export async function loadPersistedResults(): Promise<ResultRow[]> {
   const database = await getDatabase();
   if (!database) return [];
   return database.select<ResultRow[]>(
-    `SELECT r.id, r.task_id, t.title AS task_title, r.remote_url, r.local_path
+    `SELECT r.id, r.task_id, t.title AS task_title, r.remote_url, r.local_path, t.created_at
      FROM results r JOIN tasks t ON t.id = r.task_id
      WHERE t.project_id = ? AND r.local_path IS NOT NULL
      ORDER BY r.rowid DESC`,
@@ -405,7 +647,7 @@ export async function addExportRecord(format: string, targetPath: string, checks
   if (!database) return;
   await database.execute(
     "INSERT INTO exports (id, project_id, format, target_path, checksum, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-    [crypto.randomUUID(), activeProjectId, format, targetPath, checksum, new Date().toISOString()],
+    [createId(), activeProjectId, format, targetPath, checksum, new Date().toISOString()],
   );
 }
 

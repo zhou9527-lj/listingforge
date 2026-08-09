@@ -18,7 +18,7 @@ jobs:
           - os: windows-latest
             artifact: listingforge-windows-x64
             bundles: nsis
-          - os: macos-13
+          - os: macos-15-intel
             artifact: listingforge-macos-intel
             bundles: app,dmg
           - os: macos-14
@@ -37,6 +37,9 @@ jobs:
           workspaces: src-tauri
       - run: npm ci
       - run: npm run check
+      - name: Verify Windows local interactions
+        if: runner.os == 'Windows'
+        run: npm run test:click
       - name: Verify Windows project creation
         if: runner.os == 'Windows'
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib creates_project_with_a_chinese_name

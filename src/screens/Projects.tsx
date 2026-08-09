@@ -7,6 +7,7 @@ import {
   deleteProjectRecord,
   listProjects,
   renameProjectRecord,
+  loadPersistedTasks,
   type ProjectRecord,
 } from "../lib/database";
 import { useAppStore } from "../store/appStore";
@@ -20,6 +21,7 @@ const formatTime = (value: string) => {
 export function Projects() {
   const notify = useAppStore((state) => state.notify);
   const openProject = useAppStore((state) => state.openProject);
+  const hydrateLocalState = useAppStore((state) => state.hydrateLocalState);
   const pendingCreateProject = useAppStore((state) => state.pendingCreateProject);
   const consumeProjectCreator = useAppStore((state) => state.consumeProjectCreator);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
@@ -65,8 +67,9 @@ export function Projects() {
     return () => window.clearTimeout(timer);
   }, [pendingCreateProject, consumeProjectCreator]);
 
-  const openProjectWithPath = (project: ProjectRecord) => {
+  const openProjectWithPath = async (project: ProjectRecord) => {
     openProject({ id: project.id, name: project.name, path: project.path });
+    hydrateLocalState(await loadPersistedTasks(), null);
     notify(`已打开项目「${project.name}」`);
   };
 
@@ -111,7 +114,7 @@ export function Projects() {
                   <span>{project.platform === "未指定" ? "未设置平台" : project.platform}</span>
                 </div>
                 <footer>
-                  <Button variant="primary" size="sm" onClick={() => openProjectWithPath(project)}>打开</Button>
+                  <Button variant="primary" size="sm" onClick={() => void openProjectWithPath(project)}>打开</Button>
                   <Button size="sm" icon={<Pencil size={14} />} onClick={() => setRenameTarget(project)}>重命名</Button>
                   <Button size="sm" icon={<Trash2 size={14} />} onClick={() => setDeleteTarget(project)}>删除</Button>
                 </footer>
@@ -121,7 +124,7 @@ export function Projects() {
         )}
       </section>
 
-      {showCreate ? <CreateProjectDialog onClose={() => setShowCreate(false)} onCreated={(project) => { setShowCreate(false); openProjectWithPath(project); }} /> : null}
+      {showCreate ? <CreateProjectDialog onClose={() => setShowCreate(false)} onCreated={(project) => { setShowCreate(false); setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]); void openProjectWithPath(project); }} /> : null}
       {renameTarget ? <RenameProjectDialog project={renameTarget} onClose={() => setRenameTarget(null)} onRenamed={() => { setRenameTarget(null); void refresh(); }} /> : null}
       {deleteTarget ? <DeleteProjectDialog project={deleteTarget} onClose={() => setDeleteTarget(null)} onDeleted={() => { setDeleteTarget(null); void refresh(); }} /> : null}
     </div>
@@ -241,9 +244,14 @@ function DeleteProjectDialog({ project, onClose, onDeleted }: { project: Project
 }
 
 function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  useEffect(() => {
+    const close = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [onClose]);
   return (
-    <div className="modal-backdrop" role="dialog" aria-label={title}>
-      <div className="modal">
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}>
+      <div className="modal" role="dialog" aria-modal="true" aria-label={title}>
         <header><h2>{title}</h2><button className="modal-close" aria-label="关闭" onClick={onClose}><X size={16} /></button></header>
         {children}
       </div>

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Canvas } from "fabric";
+import { Canvas, FabricObject, Textbox } from "fabric";
 import {
   AlignCenter,
   AlignLeft,
@@ -28,10 +28,11 @@ import {
 import { Button, IconButton, SectionTitle } from "../components/ui";
 import { getPresetSizeOptions, parseDimensionString, type CanvasSize } from "../data/platformPresets";
 import { validateEditSubmit } from "../lib/canvasEdit";
-import { getProjectPath, saveCanvasDocumentRecord } from "../lib/database";
+import { getProjectPath, loadCanvasDocumentRecord, saveCanvasDocumentRecord } from "../lib/database";
 import { hasTauriRuntime, segmentImage, submitImageGeneration } from "../lib/desktop";
 import { exportCanvasDocument, type ExportFormat } from "../lib/exporter";
 import { useAppStore } from "../store/appStore";
+import { createId } from "../lib/ids";
 
 const pages = [
   { id: "white", label: "主图 01", src: null as string | null },
@@ -39,6 +40,8 @@ const pages = [
   { id: "poster", label: "卖点 03", src: null },
   { id: "detail", label: "细节 04", src: null },
 ];
+
+FabricObject.customProperties = ["name", "layerLabel"];
 
 const persistCanvasDocument = (canvas: Canvas, pageId: string, size: CanvasSize) => {
   if (!hasTauriRuntime()) return;
@@ -49,6 +52,10 @@ export function CanvasEditor() {
   const canvasElement = useRef<HTMLCanvasElement | null>(null);
   const canvasRef = useRef<Canvas | null>(null);
   const saveTimer = useRef<number | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const historyRef = useRef<string[]>([]);
+  const historyIndexRef = useRef(-1);
+  const restoringHistory = useRef(false);
   const currentPage = useAppStore((state) => state.selectedCanvasPage);
   const setCurrentPage = useAppStore((state) => state.setCanvasPage);
   const selectedLayer = useAppStore((state) => state.selectedLayerId);
@@ -64,6 +71,21 @@ export function CanvasEditor() {
   const [opacity, setOpacity] = useState(100);
   const [prompt, setPrompt] = useState("把橙子换成青柠，保持产品不变");
   const [visibleLayers, setVisibleLayers] = useState<Set<string>>(() => new Set());
+  const [lockedLayers, setLockedLayers] = useState<Set<string>>(() => new Set());
+  const [layerIds, setLayerIds] = useState<string[]>([]);
+  const [toolMode, setToolMode] = useState<"select" | "crop" | "mask" | "hand">("select");
+  const [selectionBounds, setSelectionBounds] = useState({ x: 0, y: 0, width: 0, height: 0 });
+  const [fontFamily, setFontFamily] = useState("HarmonyOS Sans SC");
+  const [fontWeight, setFontWeight] = useState<"normal" | "bold">("bold");
+  const [textAlign, setTextAlign] = useState<"left" | "center" | "right">("center");
+  const [textColor, setTextColor] = useState("#ffffff");
+  const [lineHeight, setLineHeight] = useState(1.2);
+  const [charSpacing, setCharSpacing] = useState(0);
+  const [compare, setCompare] = useState(false);
+  const [strokeOpen, setStrokeOpen] = useState(false);
+  const [positionOpen, setPositionOpen] = useState(false);
+  const [savedAt, setSavedAt] = useState(() => new Date().toLocaleTimeString("zh-CN", { hour12: false }));
+  const [memoryLabel, setMemoryLabel] = useState("内存由系统管理");
   const [zoom, setZoom] = useState(72);
   const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting] = useState<ExportFormat | null>(null);
@@ -109,6 +131,47 @@ export function CanvasEditor() {
   const canvasBackground = pageSource;
 
   useEffect(() => {
+    const updateMemory = () => {
+      const memory = (performance as Performance & { memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number } }).memory;
+      if (memory) setMemoryLabel(`内存 ${(memory.usedJSHeapSize / 1024 / 1024).toFixed(0)} MB / ${(memory.jsHeapSizeLimit / 1024 / 1024).toFixed(0)} MB`);
+    };
+    updateMemory();
+    const timer = window.setInterval(updateMemory, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const syncLayers = (canvas: Canvas) => {
+    const objects = canvas.getObjects().filter((item) => item.get("name") !== "mask");
+    const ids = objects.map((item) => String(item.get("name") ?? "")).filter(Boolean);
+    setLayerIds(ids);
+    setVisibleLayers(new Set(objects.filter((item) => item.visible !== false).map((item) => String(item.get("name")))));
+    setLockedLayers(new Set(objects.filter((item) => !item.selectable).map((item) => String(item.get("name")))));
+  };
+
+  const syncSelection = (canvas: Canvas) => {
+    const object = canvas.getActiveObject();
+    if (!object) {
+      setSelectionBounds({ x: 0, y: 0, width: 0, height: 0 });
+      return;
+    }
+    setSelectionBounds({
+      x: Math.round(object.left ?? 0),
+      y: Math.round(object.top ?? 0),
+      width: Math.round(object.getScaledWidth()),
+      height: Math.round(object.getScaledHeight()),
+    });
+  };
+
+  const captureHistory = (canvas: Canvas) => {
+    if (restoringHistory.current) return;
+    const snapshot = JSON.stringify(canvas.toJSON());
+    const current = historyRef.current.slice(0, historyIndexRef.current + 1);
+    if (current[current.length - 1] === snapshot) return;
+    historyRef.current = [...current, snapshot].slice(-40);
+    historyIndexRef.current = historyRef.current.length - 1;
+  };
+
+  useEffect(() => {
     if (!canvasElement.current) return;
     const canvas = new Canvas(canvasElement.current, {
       width: canvasSize.width,
@@ -126,14 +189,22 @@ export function CanvasEditor() {
     canvas.on("selection:created", ({ selected }) => {
       const name = selected?.[0]?.get("name");
       if (typeof name === "string") setSelectedLayer(name);
+      syncSelection(canvas);
     });
     canvas.on("selection:updated", ({ selected }) => {
       const name = selected?.[0]?.get("name");
       if (typeof name === "string") setSelectedLayer(name);
+      syncSelection(canvas);
     });
+    canvas.on("selection:cleared", () => syncSelection(canvas));
     const scheduleSave = () => {
       if (saveTimer.current !== null) window.clearTimeout(saveTimer.current);
-      saveTimer.current = window.setTimeout(() => persistCanvasDocument(canvas, currentPage, canvasSize), 800);
+      saveTimer.current = window.setTimeout(() => {
+        persistCanvasDocument(canvas, currentPage, canvasSize);
+        setSavedAt(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
+      }, 800);
+      captureHistory(canvas);
+      syncSelection(canvas);
     };
     canvas.on("object:modified", scheduleSave);
     canvas.on("text:changed", scheduleSave);
@@ -143,6 +214,19 @@ export function CanvasEditor() {
       scheduleSave();
     });
 
+    const loadSaved = async () => {
+      try {
+        const record = await loadCanvasDocumentRecord(currentPage);
+        if (record?.document_json) await canvas.loadFromJSON(JSON.parse(record.document_json));
+      } catch {
+        // 首次打开页面时没有历史画布，保持空白即可。
+      }
+      canvas.requestRenderAll();
+      syncLayers(canvas);
+      captureHistory(canvas);
+    };
+    void loadSaved();
+
     return () => {
       if (saveTimer.current !== null) window.clearTimeout(saveTimer.current);
       persistCanvasDocument(canvas, currentPage, canvasSize);
@@ -150,6 +234,20 @@ export function CanvasEditor() {
       canvasRef.current = null;
     };
   }, [currentPage, pageSource, setSelectedLayer, canvasSize]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.selection = toolMode === "select";
+    canvas.defaultCursor = toolMode === "hand" ? "grab" : toolMode === "crop" ? "crosshair" : "default";
+    canvas.getObjects().forEach((item) => {
+      if (item.get("name") === "mask") return;
+      const locked = lockedLayers.has(String(item.get("name")));
+      item.set({ selectable: toolMode === "select" && !locked, evented: toolMode === "select" && !locked });
+    });
+    if (toolMode !== "select") canvas.discardActiveObject();
+    canvas.requestRenderAll();
+  }, [lockedLayers, toolMode]);
 
   useEffect(() => {
     maskModeRef.current = maskMode;
@@ -169,10 +267,11 @@ export function CanvasEditor() {
     if (!canvas) return;
     const object = canvas.getObjects().find((item) => item.get("name") === "headline");
     if (object) {
-      object.set({ fontSize, opacity: opacity / 100 });
+      object.set({ fontSize, opacity: opacity / 100, fontFamily, fontWeight, textAlign, fill: textColor, lineHeight, charSpacing });
       canvas.requestRenderAll();
+      syncSelection(canvas);
     }
-  }, [fontSize, opacity]);
+  }, [charSpacing, fontFamily, fontSize, fontWeight, lineHeight, opacity, textAlign, textColor]);
 
   const selectLayer = (id: string) => {
     setSelectedLayer(id);
@@ -191,6 +290,98 @@ export function CanvasEditor() {
       canvasRef.current?.requestRenderAll();
       return next;
     });
+  };
+
+  const toggleLock = (id: string) => {
+    setLockedLayers((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      const locked = next.has(id);
+      canvasRef.current?.getObjects().filter((item) => item.get("name") === id).forEach((item) => item.set({ selectable: !locked, evented: !locked }));
+      canvasRef.current?.requestRenderAll();
+      return next;
+    });
+  };
+
+  const addTextLayer = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const id = `text-${createId()}`;
+    const text = new Textbox("双击编辑文字", {
+      name: id,
+      left: Math.max(20, canvasSize.width * 0.16),
+      top: Math.max(20, canvasSize.height * 0.14),
+      width: Math.max(180, canvasSize.width * 0.68),
+      fontSize,
+      fontFamily,
+      fontWeight,
+      textAlign,
+      fill: textColor,
+      lineHeight,
+      charSpacing,
+      opacity: opacity / 100,
+    });
+    text.set("layerLabel", `文本 ${layerIds.length + 1}`);
+    canvas.add(text);
+    canvas.setActiveObject(text);
+    setLayerIds((current) => [...current, id]);
+    setVisibleLayers((current) => new Set(current).add(id));
+    setSelectedLayer(id);
+    syncSelection(canvas);
+    captureHistory(canvas);
+    persistCanvasDocument(canvas, currentPage, canvasSize);
+  };
+
+  const deleteSelectedLayer = () => {
+    const canvas = canvasRef.current;
+    const object = canvas?.getActiveObject();
+    if (!canvas || !object || object.get("name") === "mask") return;
+    const id = String(object.get("name"));
+    canvas.remove(object);
+    setLayerIds((current) => current.filter((item) => item !== id));
+    setVisibleLayers((current) => { const next = new Set(current); next.delete(id); return next; });
+    setLockedLayers((current) => { const next = new Set(current); next.delete(id); return next; });
+    setSelectedLayer("");
+    captureHistory(canvas);
+    persistCanvasDocument(canvas, currentPage, canvasSize);
+  };
+
+  const updateActiveObject = (patch: Record<string, unknown>) => {
+    const canvas = canvasRef.current;
+    const object = canvas?.getActiveObject();
+    if (!canvas || !object) return;
+    object.set(patch);
+    object.setCoords();
+    canvas.requestRenderAll();
+    syncSelection(canvas);
+    captureHistory(canvas);
+  };
+
+  const alignActive = (align: "left" | "center" | "right") => {
+    const object = canvasRef.current?.getActiveObject();
+    if (!object) return;
+    const left = align === "left" ? 0 : align === "right" ? canvasSize.width - object.getScaledWidth() : (canvasSize.width - object.getScaledWidth()) / 2;
+    updateActiveObject({ left: Math.max(0, left) });
+  };
+
+  const restoreHistory = async (offset: -1 | 1) => {
+    const canvas = canvasRef.current;
+    const nextIndex = historyIndexRef.current + offset;
+    if (!canvas || nextIndex < 0 || nextIndex >= historyRef.current.length) return;
+    restoringHistory.current = true;
+    historyIndexRef.current = nextIndex;
+    await canvas.loadFromJSON(JSON.parse(historyRef.current[nextIndex]));
+    canvas.requestRenderAll();
+    syncLayers(canvas);
+    restoringHistory.current = false;
+    persistCanvasDocument(canvas, currentPage, canvasSize);
+  };
+
+  const fitCanvas = () => {
+    const rect = stageRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const next = Math.floor(Math.min(100, Math.max(35, Math.min(rect.width / canvasSize.width, rect.height / canvasSize.height) * 94)));
+    setZoom(next);
   };
 
   const segmentSource = async () => {
@@ -311,12 +502,12 @@ export function CanvasEditor() {
     try {
       const submission = await submitImageGeneration({
         prompt: `${prompt}（仅编辑图中红色高亮标注的区域，其余部分保持不变，不要改变未标注内容）`,
-        size: `${canvasSize.width}x${canvasSize.height}`,
+        size: ratioForCanvas(canvasSize),
         resolution: "1k",
         imageUrls: [editPayload.sourceDataUrl, editPayload.annotationDataUrl],
       });
       addTasks([{
-        id: crypto.randomUUID(),
+        id: createId(),
         providerTaskId: submission.taskId,
         title: `局部编辑 · ${prompt.trim().slice(0, 16)}…`,
         dimensions: sizeLabel,
@@ -360,18 +551,18 @@ export function CanvasEditor() {
     <>
     <div className="editor-screen">
       <div className="editor-toolbar">
-        <div className="tool-group"><IconButton label="撤销"><Undo2 size={18} /></IconButton><IconButton label="重做"><Redo2 size={18} /></IconButton></div>
+        <div className="tool-group"><IconButton label="撤销" onClick={() => void restoreHistory(-1)}><Undo2 size={18} /></IconButton><IconButton label="重做" onClick={() => void restoreHistory(1)}><Redo2 size={18} /></IconButton></div>
         <div className="tool-group tool-group--modes">
-          <IconButton label="选择" active><MousePointer2 size={18} /><span>选择</span></IconButton>
-          <IconButton label="裁剪"><Crop size={18} /><span>裁剪</span></IconButton>
-          <IconButton label="蒙版笔刷" active={maskMode} onClick={toggleMaskMode}><Paintbrush size={18} /><span>蒙版笔刷</span></IconButton>
-          <IconButton label="抓手"><Hand size={18} /><span>抓手</span></IconButton>
+          <IconButton label="选择" active={toolMode === "select"} onClick={() => { setToolMode("select"); setMaskMode(false); }}><MousePointer2 size={18} /><span>选择</span></IconButton>
+          <IconButton label="裁剪" active={toolMode === "crop"} onClick={() => { setToolMode("crop"); setMaskMode(false); notify("裁剪模式：请在上方尺寸中选择目标尺寸或输入自定义尺寸"); }}><Crop size={18} /><span>裁剪</span></IconButton>
+          <IconButton label="蒙版笔刷" active={maskMode} onClick={() => { setToolMode("mask"); toggleMaskMode(); }}><Paintbrush size={18} /><span>蒙版笔刷</span></IconButton>
+          <IconButton label="抓手" active={toolMode === "hand"} onClick={() => { setToolMode("hand"); setMaskMode(false); }}><Hand size={18} /><span>抓手</span></IconButton>
           <IconButton label={segmenting ? "抠图中…" : "抠图"} onClick={() => void segmentSource()}><Scissors size={18} /><span>{segmenting ? "抠图中…" : "抠图"}</span></IconButton>
         </div>
-        <div className="tool-fields"><label>X <input value="120" readOnly /></label><label>Y <input value="156" readOnly /></label><label>W <input value="760" readOnly /></label><label>H <input value="176" readOnly /></label><Lock size={16} /></div>
-        <div className="tool-group"><IconButton label="左对齐"><AlignLeft size={18} /></IconButton><IconButton label="居中"><AlignCenter size={18} /></IconButton><IconButton label="右对齐"><AlignRight size={18} /></IconButton></div>
+        <div className="tool-fields"><label>X <input type="number" value={selectionBounds.x} onChange={(event) => updateActiveObject({ left: Number(event.target.value) })} /></label><label>Y <input type="number" value={selectionBounds.y} onChange={(event) => updateActiveObject({ top: Number(event.target.value) })} /></label><label>W <input type="number" value={selectionBounds.width} onChange={(event) => { const object = canvasRef.current?.getActiveObject(); if (object?.width) updateActiveObject({ scaleX: Number(event.target.value) / object.width }); }} /></label><label>H <input type="number" value={selectionBounds.height} onChange={(event) => { const object = canvasRef.current?.getActiveObject(); if (object?.height) updateActiveObject({ scaleY: Number(event.target.value) / object.height }); }} /></label><button aria-label="锁定所选图层" disabled={!selectedLayer} onClick={() => toggleLock(selectedLayer)}>{lockedLayers.has(selectedLayer) ? <Lock size={16} /> : <Unlock size={16} />}</button></div>
+        <div className="tool-group"><IconButton label="左对齐" onClick={() => alignActive("left")}><AlignLeft size={18} /></IconButton><IconButton label="居中" onClick={() => alignActive("center")}><AlignCenter size={18} /></IconButton><IconButton label="右对齐" onClick={() => alignActive("right")}><AlignRight size={18} /></IconButton></div>
         <label className="canvas-size-select">尺寸 <select value={customSize ? "custom" : sizeLabel} onChange={(event) => { if (event.target.value === "custom") setCustomSize(true); else applyPresetSize(event.target.value); }}>{presetSizeOptions.map((preset) => <option key={preset}>{preset}</option>)}{<option value="custom">自定义…</option>}</select></label>
-        <button className="zoom-select">{zoom}% <ChevronDown size={14} /></button>
+        <label className="zoom-select">缩放<select aria-label="画布缩放" value={zoom} onChange={(event) => setZoom(Number(event.target.value))}>{[35, 50, 72, 85, 100, 120].map((value) => <option key={value} value={value}>{value}%</option>)}</select></label>
         <Button variant="primary" icon={<Save size={16} />} onClick={() => setExportOpen(true)}>导出</Button>
       </div>
 
@@ -383,52 +574,52 @@ export function CanvasEditor() {
         </div>
         <h3>图层</h3>
         <div className="layer-list">
-          {selectedLayer === "headline" && visibleLayers.has("headline") ? (
-            <button className="is-active" onClick={() => selectLayer("headline")}>
-              <TextCursorInput size={18} /><span>标题文本</span>
-              <i onClick={(event) => { event.stopPropagation(); toggleLayer("headline"); }}><Eye size={16} /></i>
-              <Unlock size={15} />
-            </button>
-          ) : null}
-          {!selectedLayer && visibleLayers.size === 0 ? <p className="layer-list__empty">暂无图层，从结果页加入图片后可编辑。</p> : null}
+          {layerIds.map((id, index) => <button key={id} className={selectedLayer === id ? "is-active" : ""} onClick={() => selectLayer(id)}><TextCursorInput size={18} /><span>{`文本 ${index + 1}`}</span><i className={!visibleLayers.has(id) ? "is-hidden" : ""} onClick={(event) => { event.stopPropagation(); toggleLayer(id); }}><Eye size={16} /></i><i onClick={(event) => { event.stopPropagation(); toggleLock(id); }}>{lockedLayers.has(id) ? <Lock size={15} /> : <Unlock size={15} />}</i></button>)}
+          {layerIds.length === 0 ? <p className="layer-list__empty">暂无叠加图层，可新建文本图层；背景图仍可导出。</p> : null}
         </div>
-        <div className="layer-footer"><Button size="sm" icon={<Layers size={15} />} disabled>新建图层</Button><IconButton label="删除图层" disabled><Trash2 size={16} /></IconButton></div>
+        <div className="layer-footer"><Button size="sm" icon={<Layers size={15} />} onClick={addTextLayer}>新建文本</Button><IconButton label="删除图层" disabled={!selectedLayer} onClick={deleteSelectedLayer}><Trash2 size={16} /></IconButton></div>
       </aside>
 
       <section className="canvas-workspace">
         <div className="canvas-ruler canvas-ruler--top">{rulerMarks(canvasSize.width).map((mark) => <span key={mark}>{mark}</span>)}</div>
         <div className="canvas-ruler canvas-ruler--left">{rulerMarks(canvasSize.height).map((mark) => <span key={mark}>{mark}</span>)}</div>
-        <div className="canvas-stage"><div className="canvas-host" style={{ backgroundImage: `url(${canvasBackground})`, aspectRatio: `${canvasSize.width} / ${canvasSize.height}` }}><canvas ref={canvasElement} /></div></div>
+        <div className="canvas-stage" ref={stageRef}><div className={`canvas-host ${compare ? "is-comparing" : ""}`} style={{ backgroundImage: `url(${canvasBackground})`, aspectRatio: `${canvasSize.width} / ${canvasSize.height}`, width: `${zoom}%` }}><canvas ref={canvasElement} style={{ visibility: compare ? "hidden" : "visible" }} /></div></div>
         <div className="canvas-controls">
           {customSize ? <label className="custom-size-fields">宽 <input type="number" min="1" value={customWidth} onChange={(event) => setCustomWidth(Number(event.target.value))} /> px 高 <input type="number" min="1" value={customHeight} onChange={(event) => setCustomHeight(Number(event.target.value))} /> px <button onClick={applyCustomSize}>应用</button></label> : null}
-          <Button size="sm" icon={<Scan size={15} />}>适合画布</Button><ZoomOut size={16} /><input type="range" min="35" max="120" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /><ZoomIn size={16} /><label>对比 <input type="checkbox" /></label>
+          <Button size="sm" icon={<Scan size={15} />} onClick={fitCanvas}>适合画布</Button><ZoomOut size={16} /><input type="range" min="35" max="120" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /><ZoomIn size={16} /><label title="显示不含叠加图层的原始背景">对比 <input type="checkbox" checked={compare} onChange={(event) => setCompare(event.target.checked)} /></label>
         </div>
       </section>
 
       <aside className="canvas-inspector">
         <div className="inspector-tabs"><button className={inspectorTab === "properties" ? "is-active" : ""} onClick={() => setInspectorTab("properties")}>属性</button><button className={inspectorTab === "ai" ? "is-active" : ""} onClick={() => setInspectorTab("ai")}>AI 局部编辑</button></div>
         <div className="canvas-inspector__body">
+          {inspectorTab === "properties" ? <>
           <section className="property-section">
             <header>文本 <ChevronDown size={15} /></header>
-            <button className="field-select">HarmonyOS Sans SC <ChevronDown size={14} /></button>
-            <div className="field-row"><button className="field-select">粗体 <ChevronDown size={14} /></button><label><input type="number" value={fontSize} onChange={(event) => setFontSize(Number(event.target.value))} /> px</label></div>
-            <label className="color-field"><i />#FFFFFF</label>
-            <div className="field-row"><label>行高 <input value="1.2" readOnly /></label><label>字距 <input value="0" readOnly /></label></div>
-            <div className="alignment-row"><button><AlignLeft size={18} /></button><button className="is-active"><AlignCenter size={18} /></button><button><AlignRight size={18} /></button></div>
+            <select className="field-select" value={fontFamily} onChange={(event) => setFontFamily(event.target.value)}><option>HarmonyOS Sans SC</option><option>Microsoft YaHei</option><option>Arial</option></select>
+            <div className="field-row"><select className="field-select" value={fontWeight} onChange={(event) => setFontWeight(event.target.value as "normal" | "bold")}><option value="normal">常规</option><option value="bold">粗体</option></select><label><input type="number" min="8" max="400" value={fontSize} onChange={(event) => setFontSize(Number(event.target.value))} /> px</label></div>
+            <label className="color-field"><input type="color" value={textColor} onChange={(event) => setTextColor(event.target.value)} />{textColor.toUpperCase()}</label>
+            <div className="field-row"><label>行高 <input type="number" min="0.5" max="3" step="0.1" value={lineHeight} onChange={(event) => setLineHeight(Number(event.target.value))} /></label><label>字距 <input type="number" min="-200" max="800" value={charSpacing} onChange={(event) => setCharSpacing(Number(event.target.value))} /></label></div>
+            <div className="alignment-row"><button className={textAlign === "left" ? "is-active" : ""} onClick={() => setTextAlign("left")}><AlignLeft size={18} /></button><button className={textAlign === "center" ? "is-active" : ""} onClick={() => setTextAlign("center")}><AlignCenter size={18} /></button><button className={textAlign === "right" ? "is-active" : ""} onClick={() => setTextAlign("right")}><AlignRight size={18} /></button></div>
             <label className="opacity-field">不透明度 <input type="range" min="0" max="100" value={opacity} onChange={(event) => setOpacity(Number(event.target.value))} /><b>{opacity}%</b></label>
           </section>
-          <button className="property-collapse">描边与阴影 <ChevronDown size={15} /></button>
-          <button className="property-collapse">位置与尺寸 <ChevronDown size={15} /></button>
+          <button className={`property-collapse ${strokeOpen ? "is-open" : ""}`} onClick={() => setStrokeOpen((value) => !value)}>描边与阴影 <ChevronDown size={15} /></button>
+          {strokeOpen ? <section className="property-section property-section--compact"><label className="color-field">描边 <input type="color" onChange={(event) => updateActiveObject({ stroke: event.target.value, strokeWidth: 2 })} /></label><Button size="sm" onClick={() => updateActiveObject({ shadow: "0 8px 24px rgba(0,0,0,.35)" })}>添加柔和阴影</Button></section> : null}
+          <button className={`property-collapse ${positionOpen ? "is-open" : ""}`} onClick={() => setPositionOpen((value) => !value)}>位置与尺寸 <ChevronDown size={15} /></button>
+          {positionOpen ? <section className="property-section property-section--compact"><div className="field-row"><label>X <input type="number" value={selectionBounds.x} onChange={(event) => updateActiveObject({ left: Number(event.target.value) })} /></label><label>Y <input type="number" value={selectionBounds.y} onChange={(event) => updateActiveObject({ top: Number(event.target.value) })} /></label></div><Button size="sm" onClick={() => alignActive("center")}>水平居中</Button></section> : null}
+          </> : null}
+          {inspectorTab === "ai" ? (
           <section className="ai-edit-section">
             <header>AI 局部编辑 <ChevronDown size={15} /></header>
             <div className="mask-row"><span>蒙版区域</span><div className="mask-preview">{maskPreviewUrl ? <img src={maskPreviewUrl} alt="蒙版预览" /> : <><i /><i /></>}</div><IconButton label={maskMode ? "退出蒙版" : "编辑蒙版"} active={maskMode} onClick={toggleMaskMode}><Paintbrush size={16} /></IconButton>{maskPreviewUrl ? <IconButton label="清除蒙版" onClick={clearMask}><Trash2 size={16} /></IconButton> : null}</div>
             <label>编辑指令<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} /><small>{prompt.length}/200</small></label>
             <Button variant="primary" className="full-width" onClick={() => void openEditConfirm()}>{confirmingEdit ? "正在准备…" : "生成局部修改"}</Button>
           </section>
+          ) : null}
         </div>
       </aside>
 
-      <footer className="editor-status"><span>{sizeLabel} px</span><span>RGB / sRGB</span><span>● 自动保存中 10:32:18</span><span>● 本地保存 10:32:18</span><span>内存使用 1.24 GB / 8.00 GB</span></footer>
+      <footer className="editor-status"><span>{sizeLabel} px</span><span>RGB / sRGB</span><span>● 自动保存已开启</span><span>● 最近保存 {savedAt}</span><span>{memoryLabel}</span></footer>
     </div>
     {exportOpen ? (
       <div className="modal-backdrop" role="presentation">
@@ -491,4 +682,13 @@ const rulerMarks = (pixels: number) => {
   for (let value = 0; value <= pixels; value += step) marks.push(value);
   if (marks[marks.length - 1] !== pixels) marks.push(pixels);
   return marks;
+};
+
+const ratioForCanvas = ({ width, height }: CanvasSize) => {
+  const ratios = [
+    ["1:1", 1], ["3:2", 1.5], ["2:3", 2 / 3], ["4:3", 4 / 3], ["3:4", 3 / 4],
+    ["5:4", 1.25], ["4:5", 0.8], ["16:9", 16 / 9], ["9:16", 9 / 16], ["2:1", 2], ["1:2", 0.5],
+  ] as const;
+  const aspect = width / Math.max(1, height);
+  return ratios.reduce((best, candidate) => Math.abs(candidate[1] - aspect) < Math.abs(best[1] - aspect) ? candidate : best)[0];
 };

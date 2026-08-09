@@ -1,5 +1,6 @@
 import { analyzeProduct, runDeepSeekAgent, submitImageGeneration } from "./desktop";
 import type { GenerationType, TaskItem } from "../types";
+import { createId } from "./ids";
 
 interface PipelineInput {
   imageDataUrl: string;
@@ -49,7 +50,13 @@ export async function runGenerationPipeline(input: PipelineInput): Promise<TaskI
       customBrief: input.customBrief?.trim() || undefined,
       productProfile: profile,
       referenceImageCount: input.referenceImageDataUrls?.length ?? 0,
-      selectedTypes: selected.map(({ id, label, ratio }) => ({ id, label, ratio })),
+      selectedTypes: selected.map(({ id, label, ratio, purpose, promptRequirements }) => ({
+        id,
+        label,
+        ratio,
+        purpose,
+        promptRequirements,
+      })),
     }),
   );
   const plan = parseJson<{ prompts: PlannedPrompt[] }>(readChatContent(planResponse));
@@ -73,7 +80,7 @@ export async function runGenerationPipeline(input: PipelineInput): Promise<TaskI
         imageUrls: [input.imageDataUrl, ...(input.referenceImageDataUrls ?? [])],
       });
       tasks.push({
-        id: crypto.randomUUID(),
+        id: createId(),
         providerTaskId: submission.taskId,
         title: `${item.type.label} · 第 ${item.index + 1}/${item.type.count} 张`,
         dimensions: input.targetDimensions?.[item.type.id],

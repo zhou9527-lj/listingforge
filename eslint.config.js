@@ -15,7 +15,9 @@ export default tseslint.config(
         process: "readonly",
         console: "readonly",
         setTimeout: "readonly",
+        fetch: "readonly",
         document: "readonly", // page.evaluate 回调在浏览器上下文执行
+        window: "readonly", // evaluateOnNewDocument / evaluate 回调在浏览器上下文执行
       },
     },
   },

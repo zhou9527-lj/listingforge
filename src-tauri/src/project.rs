@@ -2,6 +2,7 @@ use crate::segmentation::sha256_hex;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
+use tauri::Manager;
 use tokio::fs;
 use uuid::Uuid;
 
@@ -24,6 +25,13 @@ pub struct ProjectManifest {
     pub category: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedProject {
+    pub id: Uuid,
+    pub path: String,
 }
 
 fn safe_segment(value: &str) -> Result<&str, String> {
@@ -74,7 +82,7 @@ async fn ensure_project_structure(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-async fn write_manifest(root: &Path, name: &str, platform: &str, category: &str) -> Result<(), String> {
+async fn write_manifest(root: &Path, name: &str, platform: &str, category: &str) -> Result<ProjectManifest, String> {
     let now = Utc::now().to_rfc3339();
     let manifest = ProjectManifest {
         schema_version: 1,
@@ -85,16 +93,16 @@ async fn write_manifest(root: &Path, name: &str, platform: &str, category: &str)
         created_at: now.clone(),
         updated_at: now,
     };
-    let content =
-        serde_json::to_vec_pretty(&manifest).map_err(|_| "序列化项目清单失败".to_string())?;
+    let content = serde_json::to_vec_pretty(&manifest)
+        .map_err(|_| "序列化项目清单失败".to_string())?;
     fs::write(root.join("project.json"), content)
         .await
         .map_err(|error| format!("写入项目清单失败（{}）：{error}", root.display()))?;
-    Ok(())
+    Ok(manifest)
 }
 
 #[tauri::command]
-pub async fn create_project(request: CreateProjectRequest) -> Result<String, String> {
+pub async fn create_project(request: CreateProjectRequest) -> Result<CreatedProject, String> {
     let name = safe_segment(&request.name)?;
     let root = PathBuf::from(request.parent_path).join(name);
     validate_project_path(&root)?;
@@ -104,9 +112,21 @@ pub async fn create_project(request: CreateProjectRequest) -> Result<String, Str
     {
         return Err("同名项目目录已存在".to_string());
     }
-    ensure_project_structure(&root).await?;
-    write_manifest(&root, name, &request.platform, &request.category).await?;
-    Ok(root.to_string_lossy().to_string())
+    if let Err(error) = ensure_project_structure(&root).await {
+        let _ = fs::remove_dir_all(&root).await;
+        return Err(error);
+    }
+    let manifest = match write_manifest(&root, name, &request.platform, &request.category).await {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&root).await;
+            return Err(error);
+        }
+    };
+    Ok(CreatedProject {
+        id: manifest.id,
+        path: root.to_string_lossy().to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -126,10 +146,9 @@ mod tests {
             category: "未指定".to_string(),
         };
 
-        let root = PathBuf::from(
-            tauri::async_runtime::block_on(create_project(request))
-                .expect("project creation should succeed"),
-        );
+        let created = tauri::async_runtime::block_on(create_project(request))
+            .expect("project creation should succeed");
+        let root = PathBuf::from(created.path);
         assert!(root.join("project.json").is_file());
         for folder in ["assets", "results", "canvas", "exports", "logs"] {
             assert!(root.join(folder).is_dir());
@@ -200,6 +219,32 @@ pub struct ImportedAsset {
     pub mime: String,
 }
 
+async fn inspect_image_source(source: &Path) -> Result<(&'static str, String, String), String> {
+    if !fs::try_exists(source)
+        .await
+        .map_err(|_| "无法检查源文件".to_string())?
+    {
+        return Err("源文件不存在".to_string());
+    }
+    let extension = source
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .ok_or_else(|| "图片缺少文件扩展名".to_string())?;
+    let mime = match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => return Err("仅支持 PNG / JPG / WebP 图片".to_string()),
+    };
+    let stem = source
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("asset")
+        .to_string();
+    Ok((mime, stem, extension))
+}
+
 fn safe_role(value: &str) -> Result<&str, String> {
     match value {
         "product" | "logo" | "package" | "detail" | "style" => Ok(value),
@@ -218,30 +263,7 @@ pub async fn import_asset(
     validate_project_path(&root)?;
     let role = safe_role(&role)?;
     let source = PathBuf::from(source_path);
-    if !fs::try_exists(&source)
-        .await
-        .map_err(|_| "无法检查源文件".to_string())?
-    {
-        return Err("源文件不存在".to_string());
-    }
-    let mime = match source
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| extension.to_ascii_lowercase())
-    {
-        Some(ref extension) if extension == "png" => "image/png",
-        Some(ref extension) if extension == "jpg" || extension == "jpeg" => "image/jpeg",
-        Some(ref extension) if extension == "webp" => "image/webp",
-        _ => return Err("仅支持 PNG / JPG / WebP 图片".to_string()),
-    };
-    let stem = source
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("asset");
-    let extension = source
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or("png");
+    let (mime, stem, extension) = inspect_image_source(&source).await?;
     let assets_dir = root.join("assets").join(role);
     fs::create_dir_all(&assets_dir)
         .await
@@ -258,6 +280,62 @@ pub async fn import_asset(
         sha256: sha256_hex(&bytes).await,
         mime: mime.to_string(),
     })
+}
+
+/// 把图片复制到应用级素材库。应用级素材不会自动进入任何项目。
+#[tauri::command]
+pub async fn import_global_asset(
+    app: tauri::AppHandle,
+    source_path: String,
+) -> Result<ImportedAsset, String> {
+    let source = PathBuf::from(source_path);
+    let (mime, stem, extension) = inspect_image_source(&source).await?;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "无法解析应用数据目录".to_string())?
+        .join("global-assets");
+    fs::create_dir_all(&root)
+        .await
+        .map_err(|_| "创建全局素材目录失败".to_string())?;
+    let target = root.join(format!("{}-{stem}.{extension}", Uuid::new_v4()));
+    fs::copy(&source, &target)
+        .await
+        .map_err(|_| "复制全局素材失败".to_string())?;
+    let bytes = fs::read(&target)
+        .await
+        .map_err(|_| "读取全局素材失败".to_string())?;
+    Ok(ImportedAsset {
+        path: target.to_string_lossy().to_string(),
+        sha256: sha256_hex(&bytes).await,
+        mime: mime.to_string(),
+    })
+}
+
+/// 只允许删除应用数据目录 global-assets/ 下的单个文件。
+#[tauri::command]
+pub async fn delete_global_asset_file(
+    app: tauri::AppHandle,
+    asset_path: String,
+) -> Result<(), String> {
+    let library = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "无法解析应用数据目录".to_string())?
+        .join("global-assets");
+    let target = PathBuf::from(asset_path);
+    let canonical_library = fs::canonicalize(&library)
+        .await
+        .map_err(|_| "全局素材目录不存在".to_string())?;
+    let canonical_target = fs::canonicalize(&target)
+        .await
+        .map_err(|_| "全局素材文件不存在".to_string())?;
+    if !canonical_target.starts_with(&canonical_library) || !canonical_target.is_file() {
+        return Err("已拒绝删除素材库之外的文件".to_string());
+    }
+    fs::remove_file(canonical_target)
+        .await
+        .map_err(|_| "删除全局素材文件失败".to_string())
 }
 
 #[tauri::command]

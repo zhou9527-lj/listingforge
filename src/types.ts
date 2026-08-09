@@ -20,6 +20,11 @@ export interface GenerationType {
   ratio: "1:1" | "3:4" | "4:3" | "9:16";
   selected: boolean;
   count: number;
+  /** 自定义图片类型可提供给 Agent 的用途与约束。 */
+  purpose?: string;
+  promptRequirements?: string;
+  referenceAssetIds?: string[];
+  custom?: boolean;
 }
 
 export interface ResultItem {

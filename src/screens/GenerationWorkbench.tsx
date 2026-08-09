@@ -1,25 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Ellipsis, ImagePlus, LoaderCircle, Minus, Plus, X } from "lucide-react";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { ImagePlus, Library, LoaderCircle, Minus, Plus, X } from "lucide-react";
 import { AgentPanel } from "../components/AgentPanel";
 import { Button, CheckBox, SectionTitle } from "../components/ui";
 import { getPlatformDimensions, supportedPlatforms, type SupportedPlatform } from "../data/platformPresets";
 import { estimateUnitPrice, formatYuan } from "../lib/billing";
-import { hasTauriRuntime } from "../lib/desktop";
-import { saveGeneratedTasks } from "../lib/database";
+import { hasTauriRuntime, importAsset } from "../lib/desktop";
+import { addAssetRecord, getProjectPath, listCustomGenerationTypes, listGlobalAssets, loadSettingJson, saveGeneratedTasks, type GlobalAssetRecord } from "../lib/database";
 import { fileToDataUrl, runGenerationPipeline } from "../lib/generationPipeline";
 import { validateImageFiles } from "../lib/imageFiles";
 import { useAppStore } from "../store/appStore";
+import type { GenerationType } from "../types";
 
 const categories = ["3C 数码", "美妆护肤", "服饰鞋包", "食品饮料", "家居日用", "母婴玩具", "运动户外", "其他"];
 type ReferenceRole = "logo" | "package" | "detail" | "style";
 type ReferenceFiles = Record<ReferenceRole, File[]>;
 
 export function GenerationWorkbench() {
-  const types = useAppStore((state) => state.generationTypes);
+  const builtinTypes = useAppStore((state) => state.generationTypes);
   const toggleType = useAppStore((state) => state.toggleGenerationType);
   const setCount = useAppStore((state) => state.setGenerationCount);
   const setScreen = useAppStore((state) => state.setScreen);
   const notify = useAppStore((state) => state.notify);
+  const currentProject = useAppStore((state) => state.currentProject);
   const tasks = useAppStore((state) => state.tasks);
   const addTasks = useAppStore((state) => state.addTasks);
   const fileInput = useRef<HTMLInputElement | null>(null);
@@ -32,11 +35,76 @@ export function GenerationWorkbench() {
   const [resolution, setResolution] = useState<"1k" | "2k" | "4k">("1k");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [customTypes, setCustomTypes] = useState<GenerationType[]>([]);
+  const [globalAssets, setGlobalAssets] = useState<GlobalAssetRecord[]>([]);
+  const [globalPickerOpen, setGlobalPickerOpen] = useState(false);
   const mainPreview = useMemo(() => mainFile ? URL.createObjectURL(mainFile) : null, [mainFile]);
+  const types = useMemo(() => [...builtinTypes, ...customTypes], [builtinTypes, customTypes]);
 
   useEffect(() => () => {
     if (mainPreview) URL.revokeObjectURL(mainPreview);
   }, [mainPreview]);
+
+  useEffect(() => {
+    if (!hasTauriRuntime()) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const [savedTypes, assets, defaults] = await Promise.all([
+          listCustomGenerationTypes(),
+          listGlobalAssets(),
+          loadSettingJson<{ resolution: "1k" | "2k" | "4k"; concurrency: number }>("generation_defaults"),
+        ]);
+        if (cancelled) return;
+        setCustomTypes(savedTypes.map((type) => ({
+          id: type.id,
+          label: type.name,
+          ratio: type.ratio,
+          selected: false,
+          count: type.candidateCount,
+          purpose: type.purpose,
+          promptRequirements: type.promptRequirements,
+          referenceAssetIds: type.referenceAssetIds,
+          custom: true,
+        })));
+        setGlobalAssets(assets);
+        if (defaults) {
+          setResolution(defaults.resolution);
+          setConcurrency(Math.min(4, Math.max(1, defaults.concurrency)));
+        }
+      } catch (error) {
+        notify(error instanceof Error ? error.message : "读取生成配置失败");
+      }
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [currentProject?.id, notify]);
+
+  useEffect(() => {
+    const applyAgentActions = (event: Event) => {
+      const detail = (event as CustomEvent<{ actions?: Array<{ type?: string; value?: unknown; typeId?: string; selected?: boolean; count?: number }> }>).detail;
+      for (const action of detail.actions ?? []) {
+        if (action.type === "set_platform" && supportedPlatforms.includes(action.value as SupportedPlatform)) setPlatform(action.value as SupportedPlatform);
+        if (action.type === "set_category" && categories.includes(String(action.value))) setCategory(String(action.value));
+        if (action.type === "set_brief" && typeof action.value === "string") setCustomBrief(action.value.slice(0, 2000));
+        if (action.type === "set_generation_type" && action.typeId) {
+          if (builtinTypes.some((item) => item.id === action.typeId)) {
+            const current = useAppStore.getState().generationTypes.find((item) => item.id === action.typeId);
+            if (current && typeof action.selected === "boolean" && current.selected !== action.selected) toggleType(action.typeId);
+            if (typeof action.count === "number") setCount(action.typeId, action.count);
+          } else {
+            setCustomTypes((current) => current.map((item) => item.id === action.typeId ? {
+              ...item,
+              selected: typeof action.selected === "boolean" ? action.selected : item.selected,
+              count: typeof action.count === "number" ? Math.min(4, Math.max(1, action.count)) : item.count,
+            } : item));
+          }
+        }
+      }
+    };
+    window.addEventListener("listingforge:agent-actions", applyAgentActions);
+    return () => window.removeEventListener("listingforge:agent-actions", applyAgentActions);
+  }, [builtinTypes, setCount, toggleType]);
 
   const selectedCount = types.filter((item) => item.selected).reduce((sum, item) => sum + item.count, 0);
   const totalImages = selectedCount;
@@ -76,6 +144,35 @@ export function GenerationWorkbench() {
     }
   };
 
+  const localFileFromPath = async (path: string, name: string, mime: string) => {
+    const { readFile } = await import("@tauri-apps/plugin-fs");
+    return new File([await readFile(path)], name, { type: mime });
+  };
+
+  const selectGlobalAsset = async (asset: GlobalAssetRecord) => {
+    if (!currentProject) {
+      notify("请先打开一个项目");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const projectPath = await getProjectPath();
+      if (!projectPath) throw new Error("当前项目目录不可用");
+      const role = (["product", "logo", "package", "detail", "style"].includes(asset.role) ? asset.role : "style") as "product" | ReferenceRole;
+      const imported = await importAsset(projectPath, asset.path, role);
+      await addAssetRecord(role, imported.path, imported.sha256, imported.mime);
+      const file = await localFileFromPath(imported.path, asset.name, imported.mime);
+      if (role === "product") await acceptMainFiles([file]);
+      else await acceptReferenceFiles(role, [...referenceFiles[role], file]);
+      setGlobalPickerOpen(false);
+      notify(`已复制并使用全局素材「${asset.name}」`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "使用全局素材失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const startGeneration = async () => {
     if (!hasTauriRuntime()) {
       notify("请在 ListingForge 桌面应用中提交云端生成任务");
@@ -87,10 +184,24 @@ export function GenerationWorkbench() {
       fileInput.current?.click();
       return;
     }
+    if (!currentProject) {
+      notify("请先创建或打开项目，再提交付费生成任务");
+      setConfirmOpen(false);
+      return;
+    }
     setSubmitting(true);
     try {
       const imageDataUrl = await fileToDataUrl(mainFile);
-      const referenceImageDataUrls = await Promise.all(Object.values(referenceFiles).flat().map(fileToDataUrl));
+      const selectedReferenceIds = [...new Set(types.filter((type) => type.selected).flatMap((type) => type.referenceAssetIds ?? []))];
+      const projectPath = await getProjectPath();
+      const automaticReferenceFiles: File[] = [];
+      for (const asset of globalAssets.filter((item) => selectedReferenceIds.includes(item.id))) {
+        if (!projectPath) throw new Error("当前项目目录不可用");
+        const imported = await importAsset(projectPath, asset.path, asset.role);
+        await addAssetRecord(asset.role, imported.path, imported.sha256, imported.mime);
+        automaticReferenceFiles.push(await localFileFromPath(imported.path, asset.name, imported.mime));
+      }
+      const referenceImageDataUrls = await Promise.all([...Object.values(referenceFiles).flat(), ...automaticReferenceFiles].map(fileToDataUrl));
       const tasks = await runGenerationPipeline({ imageDataUrl, referenceImageDataUrls, platform, category, customBrief, types, targetDimensions, concurrency, resolution });
       await saveGeneratedTasks(tasks, platform, category);
       addTasks(tasks);
@@ -108,7 +219,7 @@ export function GenerationWorkbench() {
     <>
     <div className="screen-layout screen-layout--workbench">
       <aside className="context-sidebar material-sidebar">
-        <SectionTitle>素材</SectionTitle>
+        <div className="material-sidebar__title"><SectionTitle>本次素材</SectionTitle><button onClick={() => setGlobalPickerOpen(true)}><Library size={14} /> 从素材库选择</button></div>
         <input ref={fileInput} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void acceptMainFiles(Array.from(event.target.files ?? []))} />
         <button className="drop-zone" onClick={() => fileInput.current?.click()}><Plus size={18} /> 添加主产品图</button>
         <AssetSection title="主产品图" files={mainFile ? [mainFile] : []} max={1} size="large" inputRef={fileInput} onFiles={acceptMainFiles} />
@@ -149,14 +260,14 @@ export function GenerationWorkbench() {
               <div className="plan-table__head"><span>类型</span><span>比例</span><span>数量（每类型）</span></div>
               {types.map((item) => (
                 <div className={`plan-row ${item.selected ? "is-selected" : ""}`} key={item.id}>
-                  <CheckBox checked={item.selected} label={`选择${item.label}`} onChange={() => toggleType(item.id)} />
+                  <CheckBox checked={item.selected} label={`选择${item.label}`} onChange={() => item.custom ? setCustomTypes((current) => current.map((type) => type.id === item.id ? { ...type, selected: !type.selected } : type)) : toggleType(item.id)} />
                   {item.preview ? <img src={item.preview} alt="" /> : <span className="plan-row__placeholder"><ImagePlus size={16} strokeWidth={1.5} /></span>}
                   <strong>{item.label} <small>{item.ratio}</small></strong>
                   <span>{item.ratio}<small>{targetDimensions[item.id]}</small></span>
                   <div className="count-control">
-                    <button aria-label="减少数量" onClick={() => setCount(item.id, item.count - 1)}><Minus size={13} /></button>
+                    <button aria-label="减少数量" onClick={() => item.custom ? setCustomTypes((current) => current.map((type) => type.id === item.id ? { ...type, count: Math.max(1, type.count - 1) } : type)) : setCount(item.id, item.count - 1)}><Minus size={13} /></button>
                     <b>{item.count}</b><em>张</em>
-                    <button aria-label="增加数量" onClick={() => setCount(item.id, item.count + 1)}><Plus size={13} /></button>
+                    <button aria-label="增加数量" onClick={() => item.custom ? setCustomTypes((current) => current.map((type) => type.id === item.id ? { ...type, count: Math.min(4, type.count + 1) } : type)) : setCount(item.id, item.count + 1)}><Plus size={13} /></button>
                   </div>
                 </div>
               ))}
@@ -169,7 +280,7 @@ export function GenerationWorkbench() {
         </div>
         <footer className="generation-footer">
           <div><strong>预计 <b>{totalImages}</b> 张{estimatedTotal === null ? <> · 费用按实际扣费回推</> : <> · 约 <b>{formatYuan(estimatedTotal, 2)}</b></>}</strong><span>单张单价按已完成任务的实际扣费均值回推；尚无数据时先出图，结算后展示。</span></div>
-          <Button variant="primary" size="lg" disabled={totalImages === 0} onClick={() => setConfirmOpen(true)}>确认并生成</Button>
+          <Button variant="primary" size="lg" disabled={totalImages === 0 || !currentProject} onClick={() => setConfirmOpen(true)}>{currentProject ? "确认并生成" : "请先打开项目"}</Button>
         </footer>
       </section>
 
@@ -185,9 +296,20 @@ export function GenerationWorkbench() {
         </section>
       </div>
     ) : null}
+    {globalPickerOpen ? (
+      <div className="modal-backdrop" role="presentation">
+        <section className="confirm-modal global-picker-modal" role="dialog" aria-modal="true" aria-labelledby="global-picker-title">
+          <header><div><small>跨项目素材库</small><h2 id="global-picker-title">选择全局素材</h2></div><button aria-label="关闭" onClick={() => setGlobalPickerOpen(false)}><X size={18} /></button></header>
+          {globalAssets.length ? <div className="global-picker-grid">{globalAssets.map((asset) => <button key={asset.id} disabled={submitting} onClick={() => void selectGlobalAsset(asset)}><img src={convertFileSrc(asset.path)} alt="" /><span><strong>{asset.name}</strong><small>{assetRoleLabelSafe(asset.role)}</small></span></button>)}</div> : <div className="empty-state"><Library size={36} /><h3>全局素材库是空的</h3><p>请先到「素材」页导入图片。</p></div>}
+          <p>选择后会先复制到当前项目目录，再作为本次素材使用。</p>
+        </section>
+      </div>
+    ) : null}
     </>
   );
 }
+
+const assetRoleLabelSafe = (role: string) => ({ product: "主图", logo: "Logo", package: "包装", detail: "细节图", style: "风格参考" }[role] ?? role);
 
 function AssetSection({ title, files, max, size, inputRef, onFiles }: { title: string; files: File[]; max: number; size?: "large"; inputRef?: React.RefObject<HTMLInputElement | null>; onFiles: (files: File[]) => void | Promise<void> }) {
   const localInput = useRef<HTMLInputElement | null>(null);
@@ -203,7 +325,7 @@ function AssetSection({ title, files, max, size, inputRef, onFiles }: { title: s
 
   return (
     <section className="asset-section">
-      <header><strong>{title} <small>{files.length}/{max}</small></strong><Ellipsis size={16} /></header>
+      <header><strong>{title} <small>{files.length}/{max}</small></strong></header>
       {!inputRef ? <input ref={localInput} className="visually-hidden" type="file" multiple={max > 1} accept="image/png,image/jpeg,image/webp" onChange={(event) => { addFiles(event.target.files); event.currentTarget.value = ""; }} /> : null}
       <div className={`asset-grid ${size === "large" ? "asset-grid--large" : ""}`}>
         {previews.map(({ file, url }, index) => <button key={`${file.name}-${file.lastModified}-${index}`} className="asset-thumb" title={`移除 ${file.name}`} onClick={() => void onFiles(files.filter((_, fileIndex) => fileIndex !== index))}><img src={url} alt={file.name} /><X size={13} /></button>)}

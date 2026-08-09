@@ -1,8 +1,13 @@
+use futures_util::StreamExt;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+use tauri::ipc::Channel;
+use tokio::sync::Mutex;
 
 use crate::secrets;
 
@@ -41,6 +46,23 @@ pub struct ImageTaskSubmission {
 pub struct AgentRequest {
     pub system: String,
     pub user: String,
+    #[serde(default)]
+    pub history: Vec<AgentHistoryMessage>,
+}
+
+#[derive(Deserialize)]
+pub struct AgentHistoryMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStreamEvent {
+    pub event: String,
+    pub delta: Option<String>,
+    pub message: Option<String>,
+    pub usage: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -52,7 +74,7 @@ pub struct VisionRequest {
 
 fn client() -> Result<Client, String> {
     Client::builder()
-        .timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(120))
         .user_agent("ListingForge/0.1")
         .build()
         .map_err(|_| "无法初始化网络客户端".to_string())
@@ -301,18 +323,15 @@ pub async fn download_task_result(
 
 #[tauri::command]
 pub async fn run_deepseek_agent(request: AgentRequest) -> Result<Value, String> {
-    if request.user.trim().is_empty() || request.user.len() > 32_000 {
-        return Err("Agent 输入无效".to_string());
-    }
+    let messages = agent_messages(&request)?;
     let key = secrets::read("deepseek")?;
     let body = json!({
         "model": "deepseek-v4-flash",
         "stream": false,
+        "thinking": { "type": "disabled" },
         "response_format": { "type": "json_object" },
-        "messages": [
-            { "role": "system", "content": request.system },
-            { "role": "user", "content": request.user }
-        ]
+        "messages": messages,
+        "max_tokens": 8192
     });
     response_json(
         client()?
@@ -324,6 +343,151 @@ pub async fn run_deepseek_agent(request: AgentRequest) -> Result<Value, String> 
             .map_err(|_| "DeepSeek 请求失败，请检查网络".to_string())?,
     )
     .await
+}
+
+fn agent_messages(request: &AgentRequest) -> Result<Vec<Value>, String> {
+    if request.system.trim().is_empty()
+        || request.user.trim().is_empty()
+        || request.system.len() > 32_000
+        || request.user.len() > 32_000
+        || request.history.len() > 40
+    {
+        return Err("Agent 输入无效".to_string());
+    }
+    let mut total = request.system.len() + request.user.len();
+    let mut messages = vec![json!({ "role": "system", "content": request.system })];
+    for item in &request.history {
+        if !matches!(item.role.as_str(), "user" | "assistant") || item.content.trim().is_empty() {
+            return Err("Agent 对话历史无效".to_string());
+        }
+        total += item.content.len();
+        if total > 256_000 {
+            return Err("Agent 对话历史过长，请新建对话".to_string());
+        }
+        messages.push(json!({ "role": item.role, "content": item.content }));
+    }
+    messages.push(json!({ "role": "user", "content": request.user }));
+    Ok(messages)
+}
+
+static CANCELLED_AGENT_REQUESTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn cancelled_requests() -> &'static Mutex<HashSet<String>> {
+    CANCELLED_AGENT_REQUESTS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+async fn send_stream_event(channel: &Channel<AgentStreamEvent>, event: AgentStreamEvent) -> Result<(), String> {
+    channel.send(event).map_err(|_| "Agent 流式通道已关闭".to_string())
+}
+
+#[tauri::command]
+pub async fn cancel_deepseek_agent(request_id: String) -> Result<(), String> {
+    if request_id.trim().is_empty() || request_id.len() > 128 {
+        return Err("Agent 请求 ID 无效".to_string());
+    }
+    cancelled_requests().lock().await.insert(request_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn stream_deepseek_agent(
+    request: AgentRequest,
+    request_id: String,
+    on_event: Channel<AgentStreamEvent>,
+) -> Result<(), String> {
+    if request_id.trim().is_empty() || request_id.len() > 128 {
+        return Err("Agent 请求 ID 无效".to_string());
+    }
+    cancelled_requests().lock().await.remove(&request_id);
+    let messages = agent_messages(&request)?;
+    let key = secrets::read("deepseek")?;
+    let response = client()?
+        .post(format!("{DEEPSEEK_BASE}/chat/completions"))
+        .bearer_auth(key)
+        .json(&json!({
+            "model": "deepseek-v4-flash",
+            "stream": true,
+            "stream_options": { "include_usage": true },
+            "thinking": { "type": "disabled" },
+            "response_format": { "type": "json_object" },
+            "messages": messages,
+            "max_tokens": 8192
+        }))
+        .send()
+        .await
+        .map_err(|_| "DeepSeek 请求失败，请检查网络".to_string())?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(safe_message(status));
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let mut finished = false;
+    loop {
+        let next_chunk = tokio::select! {
+            chunk = stream.next() => chunk,
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                if cancelled_requests().lock().await.remove(&request_id) {
+                    send_stream_event(&on_event, AgentStreamEvent {
+                        event: "stopped".to_string(),
+                        delta: None,
+                        message: Some("用户已停止生成".to_string()),
+                        usage: None,
+                    }).await?;
+                    return Ok(());
+                }
+                continue;
+            }
+        };
+        let Some(chunk) = next_chunk else { break };
+        let chunk = chunk.map_err(|_| "读取 DeepSeek 流式响应失败".to_string())?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(newline) = buffer.find('\n') {
+            let line = buffer[..newline].trim().to_string();
+            buffer.drain(..=newline);
+            let Some(data) = line.strip_prefix("data:").map(str::trim) else { continue };
+            if data == "[DONE]" {
+                finished = true;
+                break;
+            }
+            let value: Value = serde_json::from_str(data)
+                .map_err(|_| "DeepSeek 流式响应格式无效".to_string())?;
+            if let Some(delta) = value
+                .get("choices")
+                .and_then(Value::as_array)
+                .and_then(|choices| choices.first())
+                .and_then(|choice| choice.get("delta"))
+                .and_then(|delta| delta.get("content"))
+                .and_then(Value::as_str)
+            {
+                if !delta.is_empty() {
+                    send_stream_event(&on_event, AgentStreamEvent {
+                        event: "delta".to_string(),
+                        delta: Some(delta.to_string()),
+                        message: None,
+                        usage: None,
+                    }).await?;
+                }
+            }
+            if let Some(usage) = value.get("usage").filter(|usage| !usage.is_null()) {
+                send_stream_event(&on_event, AgentStreamEvent {
+                    event: "usage".to_string(),
+                    delta: None,
+                    message: None,
+                    usage: Some(usage.clone()),
+                }).await?;
+            }
+        }
+        if finished { break; }
+    }
+    cancelled_requests().lock().await.remove(&request_id);
+    send_stream_event(&on_event, AgentStreamEvent {
+        event: "done".to_string(),
+        delta: None,
+        message: None,
+        usage: None,
+    }).await
 }
 
 #[tauri::command]

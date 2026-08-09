@@ -40,6 +40,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const providers = useAppStore((state) => state.providers);
   const providerBalances = useAppStore((state) => state.providerBalances);
   const [clock, setClock] = useState(() => formatTime(new Date()));
+  const [online, setOnline] = useState(() => navigator.onLine);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -55,6 +56,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    const update = () => setOnline(navigator.onLine);
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    return () => { window.removeEventListener("online", update); window.removeEventListener("offline", update); };
+  }, []);
+
   const activeTasks = tasks.filter((task) => task.status === "running" || task.status === "analyzing").length;
 
   return (
@@ -65,7 +73,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {navItems.map((item) => {
               const Icon = item.icon;
               return (
-                <button key={item.id} className={`app-nav__item ${screen === item.id ? "is-active" : ""}`} onClick={() => setScreen(item.id)}>
+                <button key={item.id} data-screen={item.id} className={`app-nav__item ${screen === item.id ? "is-active" : ""}`} onClick={() => setScreen(item.id)}>
                   <Icon size={21} strokeWidth={1.7} />
                   <span>{t(item.labelKey)}</span>
                 </button>
@@ -73,11 +81,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             })}
           </div>
           <div className="app-nav__footer">
-            <button className={`app-nav__item ${screen === "tasks" ? "is-active" : ""}`} onClick={() => setScreen("tasks")}>
+            <button data-screen="tasks" className={`app-nav__item ${screen === "tasks" ? "is-active" : ""}`} onClick={() => setScreen("tasks")}>
               <span className="app-nav__icon-wrap"><Play size={21} strokeWidth={1.7} />{activeTasks > 0 ? <b>{activeTasks}</b> : null}</span>
               <span>{t("nav.tasks")}</span>
             </button>
-            <button className={`app-nav__item ${screen === "settings" ? "is-active" : ""}`} onClick={() => setScreen("settings")}>
+            <button data-screen="settings" className={`app-nav__item ${screen === "settings" ? "is-active" : ""}`} onClick={() => setScreen("settings")}>
               <Settings size={21} strokeWidth={1.7} />
               <span>{t("nav.settings")}</span>
             </button>
@@ -90,7 +98,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="statusbar__cell statusbar__path" title={currentProject?.path ?? ""}>项目路径 <span>{currentProject?.path ?? "未打开项目"}</span> <Folder size={14} /></div>
         <div className="statusbar__cell"><StatusDot tone="success" /> {t("status.localSaved")} <span>{clock}</span></div>
         <button className="statusbar__cell statusbar__button" onClick={() => setScreen("tasks")}><Bot size={15} /> 任务队列 <b>{activeTasks}</b></button>
-        <div className="statusbar__cell"><StatusDot tone="success" /> {t("status.network")} <strong>{t("status.normal")}</strong></div>
+        <div className="statusbar__cell"><StatusDot tone={online ? "success" : "danger"} /> {t("status.network")} <strong className={online ? "" : "is-offline"}>{online ? t("status.normal") : "离线"}</strong></div>
         <div className="statusbar__cell statusbar__balances" title="三家服务商余额 · 在「设置 → API 与模型」测试连接后刷新">
           {providers.map((provider) => (
             <span key={provider.id} title={provider.title}><StatusDot tone={provider.status === "connected" ? "success" : "muted"} />{provider.title.split("· ").pop()}{providerBalances[provider.id] === null ? " —" : ` ¥${providerBalances[provider.id]!.toFixed(2)}`}</span>

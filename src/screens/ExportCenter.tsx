@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Download, FileJson, FileUp, Image as ImageIcon, Trash2 } from "lucide-react";
+import { Download, FileJson, FileUp, Image as ImageIcon, Trash2, X } from "lucide-react";
 import { Button, SectionTitle } from "../components/ui";
 import { hasTauriRuntime } from "../lib/desktop";
 import {
@@ -26,10 +26,13 @@ export function ExportCenter() {
   const notify = useAppStore((state) => state.notify);
   const setScreen = useAppStore((state) => state.setScreen);
   const currentProject = useAppStore((state) => state.currentProject);
+  const selectedResultIds = useAppStore((state) => state.selectedResults);
+  const selectedCanvasPage = useAppStore((state) => state.selectedCanvasPage);
   const [records, setRecords] = useState<ExportRecord[]>([]);
   const [results, setResults] = useState<Array<{ id: string; taskTitle: string; localPath: string }>>([]);
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<ExportRecord | null>(null);
 
   const refresh = async () => {
     if (!hasTauriRuntime()) return;
@@ -63,9 +66,8 @@ export function ExportCenter() {
   }, [currentProject?.id, notify]);
 
   const pickTarget = async (defaultName: string, extension: string): Promise<string | null> => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const chosen = await open({
-      directory: false,
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const chosen = await save({
       defaultPath: `${projectPath ?? ""}/${defaultName}`,
       filters: [{ name: extension.toUpperCase(), extensions: [extension] }],
     });
@@ -80,10 +82,11 @@ export function ExportCenter() {
     setBusy(true);
     try {
       const { loadCanvasDocumentRecord } = await import("../lib/database");
-      const record = await loadCanvasDocumentRecord("main");
-      const target = await pickTarget("canvas-main.json", "json");
+      const record = await loadCanvasDocumentRecord(selectedCanvasPage);
+      if (!record) throw new Error("当前画布页面还没有可导出的文档，请先在画布中保存内容");
+      const target = await pickTarget(`canvas-${selectedCanvasPage}.json`, "json");
       if (!target) return;
-      const content = record ? record.document_json : "{}";
+      const content = record.document_json;
       const bytes = new TextEncoder().encode(JSON.stringify(JSON.parse(content), null, 2));
       const { writeFile } = await import("@tauri-apps/plugin-fs");
       await writeFile(target, bytes);
@@ -121,11 +124,16 @@ export function ExportCenter() {
   const removeRecord = async (record: ExportRecord) => {
     try {
       await deleteExportRecord(record.id);
+      setDeleteTarget(null);
       await refresh();
     } catch (error) {
       notify(error instanceof Error ? error.message : "删除记录失败");
     }
   };
+
+  const visibleResults = selectedResultIds.length
+    ? results.filter((result) => selectedResultIds.includes(result.id))
+    : results;
 
   if (!currentProject) {
     return (
@@ -163,11 +171,12 @@ export function ExportCenter() {
           <>
             <section className="export-section">
               <h3 className="export-section__title">已下载的结果图片</h3>
-              {results.length === 0 ? (
+              {visibleResults.length === 0 ? (
                 <p className="export-section__empty">暂无已下载的结果图片，可在「结果」页下载后导出。</p>
               ) : (
                 <div className="export-result-list">
-                  {results.map((result) => (
+                  {selectedResultIds.length ? <p className="export-selection-note">仅显示结果页已选择的 {visibleResults.length} 张图片</p> : null}
+                  {visibleResults.map((result) => (
                     <div className="export-result-row" key={result.id}>
                       <ImageIcon size={16} />
                       <span className="export-result-row__name" title={result.localPath}>{result.taskTitle}</span>
@@ -189,7 +198,7 @@ export function ExportCenter() {
                       <span className="export-history__format">{record.format === "canvas-json" ? "画布 JSON" : "结果图片"}</span>
                       <span className="export-history__time">{formatTime(record.createdAt)}</span>
                       <span className="export-history__path" title={record.targetPath}>{record.targetPath}</span>
-                      <button className="export-history__remove" aria-label="删除记录" onClick={() => void removeRecord(record)}><Trash2 size={14} /></button>
+                      <button className="export-history__remove" aria-label="删除记录" onClick={() => setDeleteTarget(record)}><Trash2 size={14} /></button>
                     </div>
                   ))}
                 </div>
@@ -198,6 +207,7 @@ export function ExportCenter() {
           </>
         )}
       </section>
+      {deleteTarget ? <div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-label="删除导出记录"><header><h2>删除导出记录</h2><button className="modal-close" aria-label="关闭" onClick={() => setDeleteTarget(null)}><X size={16} /></button></header><p className="modal-warning">只删除本地数据库中的导出记录，不会删除已经导出的文件。</p><footer className="modal-actions"><Button onClick={() => setDeleteTarget(null)}>取消</Button><Button variant="danger" onClick={() => void removeRecord(deleteTarget)}>确认删除记录</Button></footer></section></div> : null}
     </div>
   );
 }

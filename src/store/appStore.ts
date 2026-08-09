@@ -52,6 +52,7 @@ interface AppState {
   addTasks: (tasks: TaskItem[]) => void;
   hydrateLocalState: (tasks: TaskItem[], settings: { theme: ThemeMode; locale: LocaleCode } | null) => void;
   updateTask: (id: string, patch: Partial<TaskItem>) => void;
+  clearCompletedTasks: () => void;
   setCanvasPage: (id: string) => void;
   setSelectedLayer: (id: string) => void;
   setInspectorTab: (tab: AppState["inspectorTab"]) => void;
@@ -88,11 +89,11 @@ export const useAppStore = create<AppState>()(
       setScreen: (screen) => set({ screen }),
       openProject: (project) => {
         setActiveProjectId(project.id);
-        set({ currentProject: project, screen: "generate" });
+        set({ currentProject: project, screen: "generate", tasks: [], selectedTaskId: "", selectedResults: [], favoriteResults: [], canvasSource: null, canvasSourcePath: null, canvasSourceDimensions: null });
       },
       closeProject: () => {
         setActiveProjectId("");
-        set({ currentProject: null, screen: "projects" });
+        set({ currentProject: null, screen: "projects", tasks: [], selectedTaskId: "", selectedResults: [], favoriteResults: [], canvasSource: null, canvasSourcePath: null, canvasSourceDimensions: null });
       },
       pendingCreateProject: false,
       openProjectCreator: () => set({ screen: "projects", pendingCreateProject: true }),
@@ -131,6 +132,10 @@ export const useAppStore = create<AppState>()(
       })),
       updateTask: (id, patch) => set((state) => ({
         tasks: state.tasks.map((task) => task.id === id ? { ...task, ...patch } : task),
+      })),
+      clearCompletedTasks: () => set((state) => ({
+        tasks: state.tasks.filter((task) => task.status !== "completed"),
+        selectedTaskId: state.tasks.find((task) => task.status !== "completed")?.id ?? "",
       })),
       setCanvasPage: (selectedCanvasPage) => set({ selectedCanvasPage }),
       setSelectedLayer: (selectedLayerId) => set({ selectedLayerId }),

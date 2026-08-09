@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, Grid2X2, ImageOff, List, RefreshCcw, Star, Upload, WandSparkles } from "lucide-react";
+import { Grid2X2, ImageOff, List, RefreshCcw, Star, Upload, WandSparkles } from "lucide-react";
 import { AgentPanel } from "../components/AgentPanel";
 import { Button, CheckBox, SectionTitle, StatusDot } from "../components/ui";
 import { hasTauriRuntime } from "../lib/desktop";
@@ -30,6 +30,7 @@ interface RealResult {
   title: string;
   src: string;
   localPath: string;
+  createdAt: string;
 }
 
 const localResultSrc = async (localPath: string): Promise<string> => {
@@ -49,6 +50,9 @@ export function ResultsReview() {
   const openResultInCanvas = useAppStore((state) => state.openResultInCanvas);
   const notify = useAppStore((state) => state.notify);
   const [realResults, setRealResults] = useState<RealResult[]>([]);
+  const [scope, setScope] = useState<"all" | "recent">("all");
+  const [sort, setSort] = useState<"time" | "type">("time");
+  const [view, setView] = useState<"grid" | "list">("grid");
 
   useEffect(() => {
     if (!hasTauriRuntime()) return;
@@ -61,6 +65,7 @@ export function ResultsReview() {
           taskId: row.task_id,
           title: row.task_title,
           localPath: row.local_path!,
+          createdAt: row.created_at,
           src: await localResultSrc(row.local_path!),
         })));
         if (!cancelled) setRealResults(items);
@@ -75,9 +80,11 @@ export function ResultsReview() {
   }, [notify]);
 
   const visibleItems = useMemo(() => {
-    const items = filter === "all" ? realResults : realResults.filter((item) => guessType(item.title) === filter);
-    return items.map((item) => ({ ...item, type: guessType(item.title) }));
-  }, [filter, realResults]);
+    const newest = realResults[0]?.createdAt;
+    const scoped = scope === "recent" && newest ? realResults.filter((item) => item.createdAt === newest) : realResults;
+    const items = filter === "all" ? scoped : scoped.filter((item) => guessType(item.title) === filter);
+    return items.map((item) => ({ ...item, type: guessType(item.title) })).sort((a, b) => sort === "type" ? a.type.localeCompare(b.type) : b.createdAt.localeCompare(a.createdAt));
+  }, [filter, realResults, scope, sort]);
 
   const countByType = useMemo(() => {
     const counts: Record<ResultType, number> = { all: realResults.length, white: 0, scene: 0, poster: 0, detail: 0 };
@@ -97,16 +104,15 @@ export function ResultsReview() {
         <div className="filter-list">
           {filters.map((item) => <button key={item.id} className={filter === item.id ? "is-active" : ""} onClick={() => setFilter(item.id)}><span>{item.label}</span><b>{countByType[item.id]}</b></button>)}
         </div>
-        <button className="sidebar-select">淘宝 / 天猫 <ChevronDown size={14} /></button>
       </aside>
 
       <section className="workspace results-workspace">
         <header className="results-header">
           <div><SectionTitle>候选结果</SectionTitle><p><StatusDot tone="success" /> {realResults.length} 张本地结果</p></div>
           <div className="results-actions">
-            <Button icon={<RefreshCcw size={16} />} onClick={() => notify("请在生成工作台调整参数后重新生成")}>重新生成</Button>
+            <Button icon={<RefreshCcw size={16} />} onClick={() => setScreen("generate")}>重新生成</Button>
             <Button variant="primary" icon={<WandSparkles size={16} />} disabled={visibleItems.length === 0} onClick={() => { if (visibleItems[0]) editRealResult(visibleItems[0]); }}>加入画布</Button>
-            <Button icon={<Upload size={16} />} disabled={selected.length === 0} onClick={() => notify(`已准备导出 ${selected.length} 张图片，可在导出中心操作`)}>导出所选</Button>
+            <Button icon={<Upload size={16} />} disabled={selected.length === 0} onClick={() => { notify(`已选择 ${selected.length} 张图片，请在导出中心完成本地导出`); setScreen("exports"); }}>导出所选</Button>
           </div>
         </header>
         {visibleItems.length === 0 ? (
@@ -120,11 +126,11 @@ export function ResultsReview() {
           <>
             <div className="gallery-toolbar">
               <span />
-              <button>本轮生成 <ChevronDown size={14} /></button>
-              <button>按类型 <ChevronDown size={14} /></button>
-              <div className="view-toggle"><button className="is-active"><Grid2X2 size={17} /></button><button><List size={17} /></button></div>
+              <label>范围<select aria-label="结果范围" value={scope} onChange={(event) => setScope(event.target.value as "all" | "recent")}><option value="all">全部结果</option><option value="recent">最近一次任务</option></select></label>
+              <label>排序<select aria-label="结果排序" value={sort} onChange={(event) => setSort(event.target.value as "time" | "type")}><option value="time">按生成时间</option><option value="type">按类型</option></select></label>
+              <div className="view-toggle"><button aria-label="网格视图" className={view === "grid" ? "is-active" : ""} onClick={() => setView("grid")}><Grid2X2 size={17} /></button><button aria-label="列表视图" className={view === "list" ? "is-active" : ""} onClick={() => setView("list")}><List size={17} /></button></div>
             </div>
-            <div className="result-gallery">
+            <div className={`result-gallery ${view === "list" ? "result-gallery--list" : ""}`}>
               {visibleItems.map((item) => {
                 const isSelected = selected.includes(item.id);
                 const isFavorite = favorites.includes(item.id);

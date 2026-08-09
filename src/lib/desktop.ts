@@ -54,7 +54,7 @@ export const resolveDefaultProject = (parentPath: string) =>
   invokeDesktop<string>("resolve_default_project", { parentPath });
 
 export const createProjectDirectory = (parentPath: string, name: string, platform: string, category: string) =>
-  invokeDesktop<string>("create_project", { request: { parentPath, name, platform, category } });
+  invokeDesktop<{ id: string; path: string }>("create_project", { request: { parentPath, name, platform, category } });
 
 export const updateProjectManifest = (projectPath: string, name: string) =>
   invokeDesktop<string>("update_project_manifest", { projectPath, name });
@@ -65,11 +65,41 @@ export const deleteProjectDirectory = (projectPath: string) =>
 export const importAsset = (projectPath: string, sourcePath: string, role: string) =>
   invokeDesktop<{ path: string; sha256: string; mime: string }>("import_asset", { projectPath, sourcePath, role });
 
+export const importGlobalAsset = (sourcePath: string) =>
+  invokeDesktop<{ path: string; sha256: string; mime: string }>("import_global_asset", { sourcePath });
+
+export const deleteGlobalAssetFile = (assetPath: string) =>
+  invokeDesktop<void>("delete_global_asset_file", { assetPath });
+
 export const segmentImage = (projectPath: string, imagePath: string) =>
   invokeDesktop<{ outputPath: string; width: number; height: number; modelSha256: string }>("segment_image", { projectPath, imagePath });
 
 export const runDeepSeekAgent = (system: string, user: string) =>
-  invokeDesktop<Record<string, unknown>>("run_deepseek_agent", { request: { system, user } });
+  invokeDesktop<Record<string, unknown>>("run_deepseek_agent", { request: { system, user, history: [] } });
+
+export interface AgentStreamEvent {
+  event: "delta" | "usage" | "done" | "stopped";
+  delta?: string | null;
+  message?: string | null;
+  usage?: Record<string, unknown> | null;
+}
+
+export const streamDeepSeekAgent = async (
+  system: string,
+  user: string,
+  history: Array<{ role: "user" | "assistant"; content: string }>,
+  requestId: string,
+  onMessage: (event: AgentStreamEvent) => void,
+) => {
+  if (!hasTauriRuntime()) throw new Error("该功能只能在 ListingForge 桌面应用中使用");
+  const { Channel } = await import("@tauri-apps/api/core");
+  const onEvent = new Channel<AgentStreamEvent>();
+  onEvent.onmessage = onMessage;
+  return invokeDesktop<void>("stream_deepseek_agent", { request: { system, user, history }, requestId, onEvent });
+};
+
+export const cancelDeepSeekAgent = (requestId: string) =>
+  invokeDesktop<void>("cancel_deepseek_agent", { requestId });
 
 export const analyzeProduct = (imageDataUrl: string, instructions: string) =>
   invokeDesktop<Record<string, unknown>>("analyze_product", { request: { imageDataUrl, instructions } });

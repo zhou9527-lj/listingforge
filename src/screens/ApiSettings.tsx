@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bot, Eye, FolderOpen, Globe, Image as ImageIcon, Info, KeyRound, Moon, Palette, RefreshCcw, Save, Settings, ShieldCheck, SlidersHorizontal, Sun, TestTube2, Trash2, X } from "lucide-react";
+import { Bot, Eye, FolderOpen, Globe, Image as ImageIcon, KeyRound, Moon, Palette, RefreshCcw, Save, Settings, ShieldCheck, SlidersHorizontal, Sun, TestTube2, Trash2, X } from "lucide-react";
 import { Button, SectionTitle, StatusDot, Toggle } from "../components/ui";
 import { getApiSecretStatus, hasTauriRuntime, saveApiSecret, testApiProvider } from "../lib/desktop";
 import { clearProjectCanvasDocuments, clearProjectExports, loadSettingJson, saveSettingJson, saveUiSettings } from "../lib/database";
@@ -29,6 +29,7 @@ const tabTitles: Record<SettingsTabId, { title: string; note: string }> = {
 export function ApiSettings() {
   const [tab, setTab] = useState<SettingsTabId>("api");
   const notify = useAppStore((state) => state.notify);
+  const canReset = tab === "api" || tab === "defaults" || tab === "appearance";
   return (
     <div className="settings-screen">
       <aside className="settings-sidebar">
@@ -53,7 +54,11 @@ export function ApiSettings() {
         <section className="connection-log"><h2>说明</h2><p>· 密钥保存在系统凭据库（OS Keychain / Credential Manager）。</p><p>· 费用按云端实际扣费回推展示，与官方账单一致。</p><p>· 本地数据迁移：复制整个数据目录即可。</p></section>
       </aside>
 
-      <footer className="settings-footer"><span>所有更改仅保存在本地</span><Button onClick={() => notify("本页已恢复为默认值")}>恢复本页默认值</Button><Button variant="primary" size="lg" onClick={() => { void saveUiSettings({ theme: useAppStore.getState().theme, locale: useAppStore.getState().locale }); notify(`设置已保存到本地 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`); }}>保存设置</Button></footer>
+      <footer className="settings-footer">
+        <span>所有更改仅保存在本地</span>
+        {canReset ? <Button onClick={() => window.dispatchEvent(new CustomEvent("listingforge:settings-reset", { detail: { tab } }))}>恢复本页默认值</Button> : null}
+        <Button className="settings-footer__save" variant="primary" size="lg" onClick={() => { window.dispatchEvent(new CustomEvent("listingforge:settings-save", { detail: { tab } })); void saveUiSettings({ theme: useAppStore.getState().theme, locale: useAppStore.getState().locale }); notify(`设置已保存到本地 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`); }}>保存设置</Button>
+      </footer>
     </div>
   );
 }
@@ -67,6 +72,7 @@ function ApiTab() {
   const [secrets, setSecrets] = useState<Record<ProviderId, string>>({ apimart: "", deepseek: "", qwen: "" });
   const [toolsEnabled, setToolsEnabled] = useState(true);
   const [jsonEnabled, setJsonEnabled] = useState(true);
+  const [visibleSecrets, setVisibleSecrets] = useState<Record<ProviderId, boolean>>({ apimart: false, deepseek: false, qwen: false });
 
   useEffect(() => {
     let cancelled = false;
@@ -78,6 +84,28 @@ function ApiTab() {
     void loadStatuses();
     return () => { cancelled = true; };
   }, [updateProvider]);
+
+  useEffect(() => {
+    void loadSettingJson<{ toolsEnabled?: boolean; jsonEnabled?: boolean }>("deepseek_features").then((value) => {
+      if (!value) return;
+      setToolsEnabled(value.toolsEnabled ?? true);
+      setJsonEnabled(value.jsonEnabled ?? true);
+    });
+    const reset = (event: Event) => {
+      if ((event as CustomEvent<{ tab: SettingsTabId }>).detail.tab !== "api") return;
+      setSecrets({ apimart: "", deepseek: "", qwen: "" });
+      setToolsEnabled(true);
+      setJsonEnabled(true);
+      notify("已清空未保存的密钥输入，并恢复 DeepSeek 功能默认值");
+    };
+    const save = (event: Event) => {
+      if ((event as CustomEvent<{ tab: SettingsTabId }>).detail.tab !== "api") return;
+      void saveSettingJson("deepseek_features", { toolsEnabled, jsonEnabled });
+    };
+    window.addEventListener("listingforge:settings-reset", reset);
+    window.addEventListener("listingforge:settings-save", save);
+    return () => { window.removeEventListener("listingforge:settings-reset", reset); window.removeEventListener("listingforge:settings-save", save); };
+  }, [jsonEnabled, notify, toolsEnabled]);
 
   const testProvider = async (id: ProviderId) => {
     updateProvider(id, { status: "testing" });
@@ -120,7 +148,7 @@ function ApiTab() {
           <section className="provider-section" key={provider.id}>
             <header><h2>{provider.title}</h2><span className={`provider-status provider-status--${provider.status}`}><StatusDot tone={provider.status === "connected" ? "success" : provider.status === "failed" ? "danger" : "muted"} />{provider.status === "connected" ? "已连接" : provider.status === "testing" ? "测试中" : provider.status === "failed" ? "连接失败" : "未测试"}</span></header>
             <div className="provider-fields">
-              <label><span>API Key</span><div className="secret-field"><input type="password" autoComplete="off" value={secrets[provider.id]} placeholder={provider.maskedKey || "在本地填写 API Key"} onChange={(event) => setSecrets((current) => ({ ...current, [provider.id]: event.target.value }))} /><Eye size={17} /></div></label>
+              <label><span>API Key</span><div className="secret-field"><input type={visibleSecrets[provider.id] ? "text" : "password"} autoComplete="off" value={secrets[provider.id]} placeholder={provider.maskedKey || "在本地填写 API Key"} onChange={(event) => setSecrets((current) => ({ ...current, [provider.id]: event.target.value }))} /><button type="button" aria-label={visibleSecrets[provider.id] ? "隐藏密钥" : "显示密钥"} onClick={() => setVisibleSecrets((current) => ({ ...current, [provider.id]: !current[provider.id] }))}><Eye size={17} /></button></div></label>
               <label><span>端点地址</span><input value={provider.endpoint} readOnly /></label>
               <label><span>模型</span><select className="field-select-static" value={provider.model} disabled title="当前版本固定使用该模型"><option value={provider.model}>{provider.model}</option></select></label>
               <div className="provider-actions"><Button icon={<TestTube2 size={16} />} disabled={provider.status === "testing"} onClick={() => void testProvider(provider.id)}>测试连接</Button><Button onClick={() => void saveSecret(provider.id)}>更新密钥</Button></div>
@@ -163,6 +191,17 @@ function DefaultsTab() {
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    const reset = (event: Event) => {
+      if ((event as CustomEvent<{ tab: SettingsTabId }>).detail.tab !== "defaults") return;
+      setResolution("1k");
+      setConcurrency(2);
+      void saveSettingJson("generation_defaults", { resolution: "1k", concurrency: 2 });
+    };
+    window.addEventListener("listingforge:settings-reset", reset);
+    return () => window.removeEventListener("listingforge:settings-reset", reset);
+  }, []);
+
   const persist = async () => {
     await saveSettingJson("generation_defaults", { resolution, concurrency });
     setSaved(true);
@@ -201,6 +240,14 @@ function StorageTab() {
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    const reset = (event: Event) => {
+      if ((event as CustomEvent<{ tab: SettingsTabId }>).detail.tab === "storage") notify("存储位置由系统和当前项目决定，无可重置项");
+    };
+    window.addEventListener("listingforge:settings-reset", reset);
+    return () => window.removeEventListener("listingforge:settings-reset", reset);
+  }, [notify]);
+
   const openPath = async (path: string, label: string) => {
     try {
       const { openPath } = await import("@tauri-apps/plugin-opener");
@@ -232,6 +279,16 @@ function AppearanceTab() {
   const setTheme = useAppStore((state) => state.setTheme);
   const locale = useAppStore((state) => state.locale);
   const setLocale = useAppStore((state) => state.setLocale);
+  useEffect(() => {
+    const reset = (event: Event) => {
+      if ((event as CustomEvent<{ tab: SettingsTabId }>).detail.tab !== "appearance") return;
+      setTheme("dark");
+      setLocale("zh-CN");
+      void saveUiSettings({ theme: "dark", locale: "zh-CN" });
+    };
+    window.addEventListener("listingforge:settings-reset", reset);
+    return () => window.removeEventListener("listingforge:settings-reset", reset);
+  }, [setLocale, setTheme]);
   return (
     <section className="cost-settings">
       <h2>主题</h2>
@@ -249,6 +306,14 @@ function PrivacyTab() {
   const currentProject = useAppStore((state) => state.currentProject);
   const [confirming, setConfirming] = useState<"canvas" | "exports" | "ui" | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const reset = (event: Event) => {
+      if ((event as CustomEvent<{ tab: SettingsTabId }>).detail.tab === "privacy") notify("隐私页没有可恢复的默认值；清理数据必须单独确认");
+    };
+    window.addEventListener("listingforge:settings-reset", reset);
+    return () => window.removeEventListener("listingforge:settings-reset", reset);
+  }, [notify]);
 
   const runClear = async (kind: "canvas" | "exports" | "ui") => {
     setBusy(true);
@@ -296,6 +361,13 @@ function PrivacyTab() {
 
 function AboutTab() {
   const notify = useAppStore((state) => state.notify);
+  useEffect(() => {
+    const reset = (event: Event) => {
+      if ((event as CustomEvent<{ tab: SettingsTabId }>).detail.tab === "about") notify("关于页没有可恢复的默认值");
+    };
+    window.addEventListener("listingforge:settings-reset", reset);
+    return () => window.removeEventListener("listingforge:settings-reset", reset);
+  }, [notify]);
   const openRepo = async () => {
     try {
       const { openUrl } = await import("@tauri-apps/plugin-opener");
@@ -309,13 +381,12 @@ function AboutTab() {
       <h2>商品图匠 · ListingForge</h2>
       <p>AI 电商商品图生产工作台：上传素材 → Agent 规划 → 三模型协作出图 → 画布精修 → 导出。</p>
       <div className="storage-rows">
-        <label><span>版本</span><code>0.1.1（{hasTauriRuntime() ? "桌面版" : "浏览器预览"}）</code></label>
+        <label><span>版本</span><code>0.1.2（{hasTauriRuntime() ? "桌面版" : "浏览器预览"}）</code></label>
         <label><span>数据</span><code>SQLite 本地存储 · 密钥走系统凭据库</code></label>
         <label><span>项目主页</span><code>github.com/zhou9527-lj/listingforge</code></label>
       </div>
       <div className="storage-actions">
         <Button icon={<Globe size={15} />} onClick={() => void openRepo()}>打开项目主页</Button>
-        <Button icon={<Info size={15} />} onClick={() => notify("当前已是最新版本 0.1.1")}>检查更新</Button>
       </div>
     </section>
   );

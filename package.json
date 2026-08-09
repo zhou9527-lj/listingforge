@@ -1,7 +1,7 @@
 {
   "name": "listingforge",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,8 @@
     "check": "npm run lint && npm run test && npm run build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "vitest run",
+    "test": "vitest run --maxWorkers=1 --no-file-parallelism",
+    "test:click": "node scripts/click-test.mjs",
     "test:watch": "vitest",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
