@@ -3,7 +3,7 @@ use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tauri::ipc::Channel;
