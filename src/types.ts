@@ -1,4 +1,4 @@
-export type ScreenId = "projects" | "materials" | "generate" | "results" | "canvas" | "tasks" | "settings";
+export type ScreenId = "projects" | "materials" | "generate" | "results" | "canvas" | "tasks" | "settings" | "exports";
 
 export type ThemeMode = "dark" | "light";
 export type LocaleCode = "zh-CN" | "en";
@@ -13,12 +13,13 @@ export interface MaterialAsset {
 }
 
 export interface GenerationType {
+  /** 可选：类型缩略图（本地素材图或网络图）；不提供时界面显示占位图标 */
+  preview?: string;
   id: string;
   label: string;
   ratio: "1:1" | "3:4" | "4:3" | "9:16";
   selected: boolean;
   count: number;
-  preview: string;
 }
 
 export interface ResultItem {

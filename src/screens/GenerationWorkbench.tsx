@@ -3,6 +3,7 @@ import { Ellipsis, ImagePlus, LoaderCircle, Minus, Plus, X } from "lucide-react"
 import { AgentPanel } from "../components/AgentPanel";
 import { Button, CheckBox, SectionTitle } from "../components/ui";
 import { getPlatformDimensions, supportedPlatforms, type SupportedPlatform } from "../data/platformPresets";
+import { estimateUnitPrice, formatYuan } from "../lib/billing";
 import { hasTauriRuntime } from "../lib/desktop";
 import { saveGeneratedTasks } from "../lib/database";
 import { fileToDataUrl, runGenerationPipeline } from "../lib/generationPipeline";
@@ -19,6 +20,7 @@ export function GenerationWorkbench() {
   const setCount = useAppStore((state) => state.setGenerationCount);
   const setScreen = useAppStore((state) => state.setScreen);
   const notify = useAppStore((state) => state.notify);
+  const tasks = useAppStore((state) => state.tasks);
   const addTasks = useAppStore((state) => state.addTasks);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const [mainFile, setMainFile] = useState<File | null>(null);
@@ -30,14 +32,17 @@ export function GenerationWorkbench() {
   const [resolution, setResolution] = useState<"1k" | "2k" | "4k">("1k");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const mainPreview = useMemo(() => mainFile ? URL.createObjectURL(mainFile) : "/assets/demo/product-white.png", [mainFile]);
+  const mainPreview = useMemo(() => mainFile ? URL.createObjectURL(mainFile) : null, [mainFile]);
 
   useEffect(() => () => {
-    if (mainFile) URL.revokeObjectURL(mainPreview);
-  }, [mainFile, mainPreview]);
+    if (mainPreview) URL.revokeObjectURL(mainPreview);
+  }, [mainPreview]);
 
   const selectedCount = types.filter((item) => item.selected).reduce((sum, item) => sum + item.count, 0);
   const totalImages = selectedCount;
+  /** 按已完成任务的实际扣费回推单张单价；尚无数据时为 null。 */
+  const unitPrice = estimateUnitPrice(tasks);
+  const estimatedTotal = unitPrice === null ? null : unitPrice * totalImages;
   const targetDimensions = Object.fromEntries(types.map((type) => [type.id, getPlatformDimensions(platform, type.ratio)]));
   const selectedDimensions = [...new Set(types.filter((type) => type.selected).map((type) => targetDimensions[type.id]))].join(" / ");
   const referenceBytes = Object.values(referenceFiles).flat().reduce((sum, file) => sum + file.size, 0);
@@ -118,17 +123,18 @@ export function GenerationWorkbench() {
         <div className="generation-body">
           <div className="product-profile">
             <label>原图（主产品图）</label>
-            <div className="product-preview"><img src={mainPreview} alt="主产品图预览" /></div>
-            <div className="file-meta"><strong>{mainFile?.name ?? "演示素材 · 请替换后生成"}</strong><span>{mainFile ? `${(mainFile.size / 1024 / 1024).toFixed(2)} MB` : "演示素材不会提交到云端"}</span></div>
+            {mainPreview ? <div className="product-preview"><img src={mainPreview} alt="主产品图预览" /></div> : <div className="product-preview product-preview--empty"><ImagePlus size={30} strokeWidth={1.4} /></div>}
+            <div className="file-meta"><strong>{mainFile?.name ?? "尚未上传主产品图"}</strong><span>{mainFile ? `${(mainFile.size / 1024 / 1024).toFixed(2)} MB` : "上传后提交生成，演示素材不会进入云端任务"}</span></div>
             <div className="profile-summary">
               <h3>商品信息 <span>AI 提取</span></h3>
-              <dl>
-                <dt>品类</dt><dd>便携榨汁杯</dd>
-                <dt>颜色</dt><dd>深海绿</dd>
-                <dt>材质</dt><dd>Tritan 杯体 + 不锈钢刀片</dd>
-                <dt>容量</dt><dd>340 ml</dd>
-                <dt>卖点</dt><dd>无线便携 / 一键启动 / 6 叶刀片 / 长续航 / 易清洗</dd>
-              </dl>
+              {mainFile ? (
+                <dl>
+                  <dt>品类</dt><dd>{category}</dd>
+                  <dt>说明</dt><dd>生成前由 Agent 自动分析主图提取卖点；可稍后在任务详情中查看。</dd>
+                </dl>
+              ) : (
+                <p className="profile-summary__empty">上传主产品图后，Agent 会自动分析并提取商品信息。</p>
+              )}
             </div>
           </div>
 
@@ -144,7 +150,7 @@ export function GenerationWorkbench() {
               {types.map((item) => (
                 <div className={`plan-row ${item.selected ? "is-selected" : ""}`} key={item.id}>
                   <CheckBox checked={item.selected} label={`选择${item.label}`} onChange={() => toggleType(item.id)} />
-                  <img src={item.preview} alt="" />
+                  {item.preview ? <img src={item.preview} alt="" /> : <span className="plan-row__placeholder"><ImagePlus size={16} strokeWidth={1.5} /></span>}
                   <strong>{item.label} <small>{item.ratio}</small></strong>
                   <span>{item.ratio}<small>{targetDimensions[item.id]}</small></span>
                   <div className="count-control">
@@ -158,12 +164,11 @@ export function GenerationWorkbench() {
             <div className="plan-limits">
               <label>清晰度 <select value={resolution} onChange={(event) => setResolution(event.target.value as "1k" | "2k" | "4k")}><option value="1k">1K</option><option value="2k">2K</option><option value="4k">4K</option></select></label>
               <label>并发任务数 <span><button aria-label="减少并发" onClick={() => setConcurrency((value) => Math.max(1, value - 1))}><Minus size={13} /></button><b>{concurrency}</b><button aria-label="增加并发" onClick={() => setConcurrency((value) => Math.min(4, value + 1))}><Plus size={13} /></button></span></label>
-              <label>每日预算上限 <span><em>¥</em><b>50</b><button><Ellipsis size={13} /></button></span></label>
             </div>
           </div>
         </div>
         <footer className="generation-footer">
-          <div><strong>预计 <b>{totalImages}</b> 张 · <b>¥{(totalImages * 0.8).toFixed(2)}</b></strong><span>提示：预计费用基于当前模型与设置，实际费用以生成时为准。</span></div>
+          <div><strong>预计 <b>{totalImages}</b> 张{estimatedTotal === null ? <> · 费用按实际扣费回推</> : <> · 约 <b>{formatYuan(estimatedTotal, 2)}</b></>}</strong><span>单张单价按已完成任务的实际扣费均值回推；尚无数据时先出图，结算后展示。</span></div>
           <Button variant="primary" size="lg" disabled={totalImages === 0} onClick={() => setConfirmOpen(true)}>确认并生成</Button>
         </footer>
       </section>
@@ -174,7 +179,7 @@ export function GenerationWorkbench() {
       <div className="modal-backdrop" role="presentation">
         <section className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="generation-confirm-title">
           <header><div><small>付费操作确认</small><h2 id="generation-confirm-title">提交商品系列图生成</h2></div><button aria-label="关闭" onClick={() => setConfirmOpen(false)}><X size={18} /></button></header>
-          <dl><div><dt>平台 / 类目</dt><dd>{platform} · {category}</dd></div><div><dt>图片任务</dt><dd>{totalImages} 张 · {resolution.toUpperCase()}<small>{selectedDimensions}</small></dd></div><div><dt>并发上限</dt><dd>{concurrency}</dd></div><div><dt>预估费用</dt><dd className="cost-value">¥{(totalImages * 0.8).toFixed(2)}</dd></div></dl>
+          <dl><div><dt>平台 / 类目</dt><dd>{platform} · {category}</dd></div><div><dt>图片任务</dt><dd>{totalImages} 张 · {resolution.toUpperCase()}<small>{selectedDimensions}</small></dd></div><div><dt>并发上限</dt><dd>{concurrency}</dd></div><div><dt>预估费用</dt><dd className="cost-value">{estimatedTotal === null ? "生成后按实际扣费显示" : formatYuan(estimatedTotal, 2)}</dd></div><div><dt>计费明细</dt><dd>{totalImages} 张图像生成（APIMart）{estimatedTotal === null ? "按实际扣费" : `约 ${formatYuan(estimatedTotal, 2)}`}<small>通义千问商品理解、DeepSeek Agent 规划按各自接口实际扣费记录</small></dd></div></dl>
           <p>将依次调用通义千问商品理解、DeepSeek Agent 规划与 APIMart GPT-Image-2。实际费用以供应商结算为准。</p>
           <footer><Button onClick={() => setConfirmOpen(false)}>返回调整</Button><Button variant="primary" disabled={submitting} onClick={() => void startGeneration()} icon={submitting ? <LoaderCircle className="spin" size={16} /> : undefined}>{submitting ? "正在提交…" : "确认付费并提交"}</Button></footer>
         </section>

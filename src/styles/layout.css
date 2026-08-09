@@ -31,6 +31,8 @@
 .statusbar { min-width: 0; display: grid; grid-template-columns: minmax(310px, 1.8fr) minmax(210px, 1fr) minmax(190px, .85fr) minmax(180px, .75fr) minmax(160px, .65fr); border-top: 1px solid var(--border); background: var(--bg-panel); color: var(--text-secondary); font-size: 12px; }
 .statusbar__cell { min-width: 0; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 16px; border-right: 1px solid var(--border); overflow: hidden; white-space: nowrap; }
 .statusbar__cell:last-child { border-right: 0; }
+.statusbar__cell.statusbar__balances { gap: 12px; }
+.statusbar__cell.statusbar__balances > span { display: inline-flex; align-items: center; gap: 5px; color: var(--text); }
 .statusbar__cell span { color: var(--text-muted); }
 .statusbar__cell strong { color: var(--success); font-weight: 500; }
 .statusbar__cell b { min-width: 19px; height: 19px; display: grid; place-items: center; border-radius: 9px; color: #fff; background: var(--accent); font-size: 10px; }

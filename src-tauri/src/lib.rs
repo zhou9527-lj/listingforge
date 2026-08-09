@@ -141,6 +141,9 @@ pub fn run() {
             api::analyze_product,
             project::create_project,
             project::resolve_default_project,
+            project::update_project_manifest,
+            project::delete_project_directory,
+            project::import_asset,
             project::save_canvas_document,
             segmentation::segment_image,
         ])

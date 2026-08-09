@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { AlertTriangle, Check, ChevronDown, Clock3, Copy, Ellipsis, FileText, Pause, Play, RefreshCcw, Search, Trash2, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Clock3, Copy, Ellipsis, FileText, Inbox, Pause, Play, RefreshCcw, Search, Trash2, X } from "lucide-react";
 import { Button, ProgressBar, SectionTitle } from "../components/ui";
 import { downloadTaskResult, getImageTask, hasTauriRuntime } from "../lib/desktop";
 import { findDownloadedResult, getProjectPath, saveDownloadedResult, updatePersistedTask } from "../lib/database";
@@ -18,6 +18,7 @@ const statusLabels: Record<TaskStatus, string> = {
 
 export function TaskCenter() {
   const tasks = useAppStore((state) => state.tasks);
+  const currentProject = useAppStore((state) => state.currentProject);
   const paused = useAppStore((state) => state.queuePaused);
   const setPaused = useAppStore((state) => state.setQueuePaused);
   const selectedId = useAppStore((state) => state.selectedTaskId);
@@ -80,21 +81,15 @@ export function TaskCenter() {
       <aside className="context-sidebar task-sidebar">
         <SectionTitle>任务中心</SectionTitle>
         <div className="task-filters">
-          <button className="is-active"><Play size={18} /><span>进行中</span><b>3</b></button>
-          <button><Clock3 size={18} /><span>等待中</span><b>5</b></button>
-          <button><Check size={18} /><span>已完成</span><b>24</b></button>
-          <button><AlertTriangle size={18} /><span>失败</span><b>1</b></button>
+          <button className="is-active"><Play size={18} /><span>进行中</span><b>{tasks.filter((task) => task.status === "running" || task.status === "analyzing").length}</b></button>
+          <button><Clock3 size={18} /><span>等待中</span><b>{tasks.filter((task) => task.status === "queued").length}</b></button>
+          <button><Check size={18} /><span>已完成</span><b>{tasks.filter((task) => task.status === "completed").length}</b></button>
+          <button><AlertTriangle size={18} /><span>失败</span><b>{tasks.filter((task) => task.status === "failed").length}</b></button>
         </div>
-        <div className="project-scopes"><h3>项目范围</h3>{["全部项目", "便携榨汁杯", "护肤精华液", "家用收纳盒"].map((name, index) => <button className={index === 0 ? "is-active" : ""} key={name}>{name}</button>)}</div>
-        <div className="budget-panel">
-          <header>预算与配额 <span>⚙</span></header>
-          <label>今日 <strong>¥18.72</strong> / ¥50.00<ProgressBar value={37} /></label>
-          <label>本月 <strong>¥386.21</strong> / ¥1,000.00<ProgressBar value={39} /></label>
-        </div>
+        <div className="project-scopes"><h3>项目范围</h3>{["全部项目", currentProject?.name ?? "未打开项目"].map((name, index) => <button className={index === 0 ? "is-active" : ""} key={name}>{name}</button>)}</div>
       </aside>
 
       <section className="workspace task-workspace">
-        <div className="budget-alert">♧ 今日预算已使用 37%，预计剩余可生成约 36 张 <button aria-label="关闭"><X size={15} /></button></div>
         <header className="task-header"><SectionTitle>任务队列</SectionTitle></header>
         <div className="task-toolbar">
           <Button icon={paused ? <Play size={16} /> : <Pause size={16} />} onClick={() => setPaused(!paused)}>{paused ? "全部继续" : "全部暂停"}</Button>
@@ -103,6 +98,13 @@ export function TaskCenter() {
           <label>并发 <button>2 <ChevronDown size={14} /></button></label>
           <label className="task-search"><Search size={16} /><input placeholder="搜索任务（名称 / 项目）" /></label>
         </div>
+        {tasks.length === 0 ? (
+          <div className="empty-state">
+            <Inbox size={40} strokeWidth={1.4} />
+            <h3>任务队列是空的</h3>
+            <p>在生成工作台上传主图并提交方案后，任务会出现在这里。</p>
+          </div>
+        ) : null}
         <div className="task-table">
           <div className="task-table__head"><span>任务</span><span>项目</span><span>提供方 / 模型</span><span>进度 / 状态</span><span>消耗</span><span>用时</span><span>操作</span></div>
           {tasks.map((task, index) => {
@@ -125,11 +127,17 @@ export function TaskCenter() {
 
       <aside className="inspector task-inspector">
         <div className="inspector__header"><span>任务详情</span><X size={17} /></div>
-        <div className="task-detail-summary">{selectedTask.thumbnail ? <img src={selectedTask.thumbnail} alt="" /> : <FileText size={32} />}<div><strong>{selectedTask.title}</strong><span>{selectedTask.project}</span><small>提交时间：2024-05-20 10:22:18</small></div></div>
-        <div className="execution-flow"><h3>执行流程</h3>{[["排队", "10:22:18", true], ["上传素材", "10:22:20", true], ["提交任务", "10:22:22", true], ["轮询结果", "10:23:39", selectedTask.status !== "failed"]].map(([label, time, ok]) => <div key={String(label)} className={ok ? "is-done" : "is-error"}><i>{ok ? <Check size={14} /> : <X size={14} />}</i><span><strong>{label}</strong>{label === "上传素材" ? <small>3 个文件（1.8 MB）</small> : null}{label === "轮询结果" && !ok ? <small>API 请求超时</small> : null}</span><time>{time}</time></div>)}</div>
-        {selectedTask.status === "failed" ? <div className="error-detail"><h3>错误信息</h3><div><AlertTriangle size={17} /><span><strong>API 请求超时</strong><small>请稍后重试，或检查网络与服务状态。</small></span></div><dl><dt>请求 ID</dt><dd>req_7f3a9c1b****c2d8e <Copy size={13} /></dd><dt>任务 ID</dt><dd>task_9b7e4d2a****8f1c3 <Copy size={13} /></dd></dl></div> : null}
-        <div className="retry-policy"><h3>重试策略</h3><p>自动重试：已启用（最多 3 次）</p><p>下次重试：10:27:39（2 分 18 秒后）</p></div>
-        <div className="task-inspector__actions"><Button variant="primary" icon={<RefreshCcw size={16} />} onClick={() => retryAndPersist(selectedTask.id)}>重试任务</Button><Button icon={<Copy size={16} />} onClick={() => notify("脱敏诊断信息已复制")}>复制诊断信息</Button></div>
+        {!selectedTask ? (
+          <div className="task-detail-empty">暂无任务详情</div>
+        ) : (
+          <>
+        <div className="task-detail-summary">{selectedTask.thumbnail ? <img src={selectedTask.thumbnail} alt="" /> : <FileText size={32} />}<div><strong>{selectedTask.title}</strong><span>{selectedTask.project}</span><small>用时：{selectedTask.elapsed}</small></div></div>
+        <div className="execution-flow"><h3>执行流程</h3>{[["排队", "10:22:18", true], ["上传素材", "10:22:20", true], ["提交任务", "10:22:22", true], ["轮询结果", "10:23:39", selectedTask.status !== "failed"]].map(([label, time, ok]) => <div key={String(label)} className={ok ? "is-done" : "is-error"}><i>{ok ? <Check size={14} /> : <X size={14} />}</i><span><strong>{label}</strong>{label === "上传素材" ? <small>参考图已随任务提交</small> : null}{label === "轮询结果" && !ok ? <small>{selectedTask.error ?? "API 请求超时"}</small> : null}</span><time>{time}</time></div>)}</div>
+        {selectedTask.status === "failed" ? <div className="error-detail"><h3>错误信息</h3><div><AlertTriangle size={17} /><span><strong>{selectedTask.error ?? "请求失败"}</strong><small>请稍后重试，或检查网络与服务状态。</small></span></div></div> : null}
+        <div className="retry-policy"><h3>重试策略</h3><p>自动重试：已启用（最多 3 次）</p></div>
+        <div className="task-inspector__actions"><Button variant="primary" icon={<RefreshCcw size={16} />} onClick={() => retryAndPersist(selectedTask.id)}>重试任务</Button><Button icon={<Copy size={16} />} onClick={() => notify("诊断信息已复制（脱敏）")}>复制诊断信息</Button></div>
+          </>
+        )}
       </aside>
     </div>
   );

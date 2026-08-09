@@ -1,12 +1,20 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { apiProviders, generationTypes, resultItems, taskItems } from "../data/demo";
+import { apiProviders, generationTypes } from "../data/demo";
+import { setActiveProjectId } from "../lib/database";
 import type { ApiProviderConfig, LocaleCode, ScreenId, TaskItem, ThemeMode } from "../types";
+
+export interface CurrentProjectInfo {
+  id: string;
+  name: string;
+  path: string;
+}
 
 interface AppState {
   screen: ScreenId;
   theme: ThemeMode;
   locale: LocaleCode;
+  currentProject: CurrentProjectInfo | null;
   generationTypes: typeof generationTypes;
   selectedResults: string[];
   favoriteResults: string[];
@@ -18,11 +26,19 @@ interface AppState {
   selectedLayerId: string;
   inspectorTab: "properties" | "ai";
   providers: ApiProviderConfig[];
+  /** 三家服务商最近一次连接测试返回的余额；未测试/无余额接口时为 null。 */
+  providerBalances: Record<ApiProviderConfig["id"], number | null>;
+  setProviderBalance: (id: ApiProviderConfig["id"], balance: number | null) => void;
   toast: string | null;
   canvasSource: string | null;
   canvasSourcePath: string | null;
   canvasSourceDimensions: { width: number; height: number } | null;
   setScreen: (screen: ScreenId) => void;
+  openProject: (project: CurrentProjectInfo) => void;
+  closeProject: () => void;
+  pendingCreateProject: boolean;
+  openProjectCreator: () => void;
+  consumeProjectCreator: () => void;
   setTheme: (theme: ThemeMode) => void;
   setLocale: (locale: LocaleCode) => void;
   toggleGenerationType: (id: string) => void;
@@ -52,22 +68,35 @@ export const useAppStore = create<AppState>()(
       screen: "generate",
       theme: "dark",
       locale: "zh-CN",
+      currentProject: null,
       generationTypes,
-      selectedResults: resultItems.filter((item) => item.selected).map((item) => item.id),
-      favoriteResults: resultItems.filter((item) => item.favorite).map((item) => item.id),
+      selectedResults: [],
+      favoriteResults: [],
       resultFilter: "all",
-      tasks: taskItems,
+      tasks: [],
       queuePaused: false,
-      selectedTaskId: "task-6",
+      selectedTaskId: "",
       selectedCanvasPage: "poster",
       selectedLayerId: "headline",
       inspectorTab: "properties",
       providers: apiProviders,
+      providerBalances: { apimart: null, deepseek: null, qwen: null },
       toast: null,
       canvasSource: null,
       canvasSourcePath: null,
       canvasSourceDimensions: null,
       setScreen: (screen) => set({ screen }),
+      openProject: (project) => {
+        setActiveProjectId(project.id);
+        set({ currentProject: project, screen: "generate" });
+      },
+      closeProject: () => {
+        setActiveProjectId("");
+        set({ currentProject: null, screen: "projects" });
+      },
+      pendingCreateProject: false,
+      openProjectCreator: () => set({ screen: "projects", pendingCreateProject: true }),
+      consumeProjectCreator: () => set({ pendingCreateProject: false }),
       setTheme: (theme) => set({ theme }),
       setLocale: (locale) => set({ locale }),
       toggleGenerationType: (id) => set((state) => ({
@@ -95,10 +124,10 @@ export const useAppStore = create<AppState>()(
       })),
       addTasks: (tasks) => set((state) => ({ tasks: [...tasks, ...state.tasks] })),
       hydrateLocalState: (tasks, settings) => set((state) => ({
-        tasks: tasks.length ? tasks : state.tasks,
+        tasks,
         theme: settings?.theme ?? state.theme,
         locale: settings?.locale ?? state.locale,
-        selectedTaskId: tasks[0]?.id ?? state.selectedTaskId,
+        selectedTaskId: tasks[0]?.id ?? "",
       })),
       updateTask: (id, patch) => set((state) => ({
         tasks: state.tasks.map((task) => task.id === id ? { ...task, ...patch } : task),
@@ -111,12 +140,15 @@ export const useAppStore = create<AppState>()(
       updateProvider: (id, patch) => set((state) => ({
         providers: state.providers.map((provider) => provider.id === id ? { ...provider, ...patch } : provider),
       })),
+      setProviderBalance: (id, balance) => set((state) => ({
+        providerBalances: { ...state.providerBalances, [id]: balance },
+      })),
       notify: (toast) => set({ toast }),
       clearToast: () => set({ toast: null }),
     }),
     {
       name: "listingforge-ui",
-      partialize: (state) => ({ theme: state.theme, locale: state.locale }),
+      partialize: (state) => ({ theme: state.theme, locale: state.locale, currentProject: state.currentProject }),
     },
   ),
 );

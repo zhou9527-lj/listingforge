@@ -17,6 +17,7 @@
   --success: #31c875;
   --local: #31a9c8;
   --danger: #ef554f;
+  --danger-soft: rgba(239, 85, 79, 0.12);
   --warning: #e6a928;
   --shadow-float: 0 16px 40px rgba(0, 0, 0, 0.36);
   --canvas-pasteboard: #15191d;
@@ -40,6 +41,7 @@
   --success: #19a85a;
   --local: #168aa7;
   --danger: #d83d3d;
+  --danger-soft: rgba(216, 61, 61, 0.1);
   --warning: #c98a13;
   --shadow-float: 0 16px 40px rgba(25, 31, 38, 0.16);
   --canvas-pasteboard: #d8dce1;

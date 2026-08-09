@@ -23,7 +23,7 @@ const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 const MAX_DIMENSION: u32 = 8192;
 const MAX_PIXELS: u64 = 25_000_000;
 
-async fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) async fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 

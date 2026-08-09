@@ -1,16 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Canvas, Circle, FabricText, Line } from "fabric";
+import { Canvas } from "fabric";
 import {
   AlignCenter,
   AlignLeft,
   AlignRight,
-  Box,
   ChevronDown,
   Crop,
   Eye,
-  EyeOff,
   Hand,
-  Image as ImageIcon,
   Layers,
   LoaderCircle,
   Lock,
@@ -20,8 +17,6 @@ import {
   Save,
   Scan,
   Scissors,
-  Sun,
-  Tag,
   TextCursorInput,
   Trash2,
   Undo2,
@@ -31,7 +26,6 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { Button, IconButton, SectionTitle } from "../components/ui";
-import { canvasLayers, demoAssets } from "../data/demo";
 import { getPresetSizeOptions, parseDimensionString, type CanvasSize } from "../data/platformPresets";
 import { validateEditSubmit } from "../lib/canvasEdit";
 import { getProjectPath, saveCanvasDocumentRecord } from "../lib/database";
@@ -40,10 +34,10 @@ import { exportCanvasDocument, type ExportFormat } from "../lib/exporter";
 import { useAppStore } from "../store/appStore";
 
 const pages = [
-  { id: "white", label: "主图 01", src: demoAssets.white },
-  { id: "scene", label: "场景 02", src: demoAssets.lifestyle },
-  { id: "poster", label: "卖点 03", src: demoAssets.poster },
-  { id: "detail", label: "细节 04", src: demoAssets.detail },
+  { id: "white", label: "主图 01", src: null as string | null },
+  { id: "scene", label: "场景 02", src: null },
+  { id: "poster", label: "卖点 03", src: null },
+  { id: "detail", label: "细节 04", src: null },
 ];
 
 const persistCanvasDocument = (canvas: Canvas, pageId: string, size: CanvasSize) => {
@@ -69,7 +63,7 @@ export function CanvasEditor() {
   const [fontSize, setFontSize] = useState(78);
   const [opacity, setOpacity] = useState(100);
   const [prompt, setPrompt] = useState("把橙子换成青柠，保持产品不变");
-  const [visibleLayers, setVisibleLayers] = useState(() => new Set(canvasLayers.map((layer) => layer.id)));
+  const [visibleLayers, setVisibleLayers] = useState<Set<string>>(() => new Set());
   const [zoom, setZoom] = useState(72);
   const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting] = useState<ExportFormat | null>(null);
@@ -111,8 +105,8 @@ export function CanvasEditor() {
     setCustomHeight(height);
   };
 
-  const pageSource = useMemo(() => canvasSource ?? pages.find((page) => page.id === currentPage)?.src ?? demoAssets.posterBackground, [canvasSource, currentPage]);
-  const canvasBackground = currentPage === "poster" && !canvasSource ? demoAssets.posterBackground : pageSource;
+  const pageSource = useMemo(() => canvasSource ?? pages.find((page) => page.id === currentPage)?.src ?? null, [canvasSource, currentPage]);
+  const canvasBackground = pageSource;
 
   useEffect(() => {
     if (!canvasElement.current) return;
@@ -126,33 +120,6 @@ export function CanvasEditor() {
       selectionLineWidth: 2,
     });
     canvasRef.current = canvas;
-
-    if (currentPage === "poster") {
-        const headline = new FabricText("鲜榨随行", {
-          left: 64,
-          top: 112,
-          fill: "#ffffff",
-          fontFamily: "Microsoft YaHei UI, sans-serif",
-          fontWeight: 700,
-          fontSize: 78,
-          name: "headline",
-          borderColor: "#ff6538",
-          cornerColor: "#ff6538",
-          cornerStyle: "rect",
-          transparentCorners: false,
-          padding: 8,
-        });
-        const subline = new FabricText("6叶精钢刀片 · 340ml大容量", { left: 70, top: 220, fill: "#ffffff", fontFamily: "Microsoft YaHei UI, sans-serif", fontSize: 27, name: "features", selectable: true });
-        canvas.add(headline, subline);
-
-        const featureData = [["强劲碎榨", 86], ["随行畅享", 236], ["长续航", 386]] as const;
-        featureData.forEach(([label, x]) => {
-          canvas.add(new Circle({ left: x, top: 310, radius: 34, fill: "rgba(3,30,32,.35)", stroke: "#ffffff", strokeWidth: 2, selectable: false, evented: false, name: "features" }));
-          canvas.add(new FabricText(label, { left: x - 8, top: 390, originX: "left", fill: "#ffffff", fontFamily: "Microsoft YaHei UI, sans-serif", fontSize: 22, name: "features", selectable: false, evented: false }));
-        });
-        canvas.add(new Line([70, 282, 460, 282], { stroke: "rgba(255,255,255,.8)", strokeWidth: 2, selectable: false, evented: false, name: "features" }));
-        canvas.setActiveObject(headline);
-    }
     canvas.isDrawingMode = maskModeRef.current;
     canvas.requestRenderAll();
 
@@ -274,6 +241,7 @@ export function CanvasEditor() {
     if (!canvas) return null;
     const width = canvasSize.width;
     const height = canvasSize.height;
+    if (!canvasBackground) return null;
     const background = await loadImage(canvasBackground);
     // 原图 Data URL（画布同尺寸），APIMart 参考图只接受 HTTPS URL 或 Data URL
     const sourceCanvas = document.createElement("canvas");
@@ -372,6 +340,10 @@ export function CanvasEditor() {
     if (!canvasRef.current) return;
     setExporting(format);
     try {
+      if (!canvasBackground) {
+        notify("没有可导出的画布内容");
+        return;
+      }
       const saved = await exportCanvasDocument(canvasRef.current, canvasBackground, format, canvasSize);
       if (saved) {
         notify("导出完成");
@@ -407,22 +379,20 @@ export function CanvasEditor() {
         <SectionTitle>页面与图层</SectionTitle>
         <h3>页面</h3>
         <div className="page-strip">
-          {pages.map((page) => <button key={page.id} className={currentPage === page.id ? "is-active" : ""} onClick={() => setCurrentPage(page.id)}><img src={page.src} alt="" /><span>{page.label}</span></button>)}
+          {pages.map((page) => <button key={page.id} className={currentPage === page.id ? "is-active" : ""} onClick={() => setCurrentPage(page.id)}>{page.src ? <img src={page.src} alt="" /> : <span className="page-strip__blank" />}<span>{page.label}</span></button>)}
         </div>
         <h3>图层</h3>
         <div className="layer-list">
-          {canvasLayers.map((layer) => {
-            const Icon = layer.kind === "text" ? TextCursorInput : layer.kind === "tag" ? Tag : layer.kind === "image" ? Box : layer.kind === "light" ? Sun : ImageIcon;
-            return (
-              <button key={layer.id} className={selectedLayer === layer.id ? "is-active" : ""} onClick={() => selectLayer(layer.id)}>
-                <Icon size={18} /><span>{layer.name}</span>
-                <i onClick={(event) => { event.stopPropagation(); toggleLayer(layer.id); }}>{visibleLayers.has(layer.id) ? <Eye size={16} /> : <EyeOff size={16} />}</i>
-                {layer.locked ? <Lock size={15} /> : <Unlock size={15} />}
-              </button>
-            );
-          })}
+          {selectedLayer === "headline" && visibleLayers.has("headline") ? (
+            <button className="is-active" onClick={() => selectLayer("headline")}>
+              <TextCursorInput size={18} /><span>标题文本</span>
+              <i onClick={(event) => { event.stopPropagation(); toggleLayer("headline"); }}><Eye size={16} /></i>
+              <Unlock size={15} />
+            </button>
+          ) : null}
+          {!selectedLayer && visibleLayers.size === 0 ? <p className="layer-list__empty">暂无图层，从结果页加入图片后可编辑。</p> : null}
         </div>
-        <div className="layer-footer"><Button size="sm" icon={<Layers size={15} />}>新建图层</Button><IconButton label="删除图层"><Trash2 size={16} /></IconButton></div>
+        <div className="layer-footer"><Button size="sm" icon={<Layers size={15} />} disabled>新建图层</Button><IconButton label="删除图层" disabled><Trash2 size={16} /></IconButton></div>
       </aside>
 
       <section className="canvas-workspace">

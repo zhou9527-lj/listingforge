@@ -46,6 +46,18 @@ export const downloadTaskResult = (taskId: string, url: string, projectPath: str
 export const resolveDefaultProject = (parentPath: string) =>
   invokeDesktop<string>("resolve_default_project", { parentPath });
 
+export const createProjectDirectory = (parentPath: string, name: string, platform: string, category: string) =>
+  invokeDesktop<string>("create_project", { request: { parentPath, name, platform, category } });
+
+export const updateProjectManifest = (projectPath: string, name: string) =>
+  invokeDesktop<string>("update_project_manifest", { projectPath, name });
+
+export const deleteProjectDirectory = (projectPath: string) =>
+  invokeDesktop<void>("delete_project_directory", { projectPath });
+
+export const importAsset = (projectPath: string, sourcePath: string, role: string) =>
+  invokeDesktop<{ path: string; sha256: string; mime: string }>("import_asset", { projectPath, sourcePath, role });
+
 export const segmentImage = (projectPath: string, imagePath: string) =>
   invokeDesktop<{ outputPath: string; width: number; height: number; modelSha256: string }>("segment_image", { projectPath, imagePath });
 
