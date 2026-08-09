@@ -176,3 +176,5 @@ tags: [商品图匠, ListingForge, 开发进度, AI交接]
 2026-08-09（第十一次）：桌面构建状态确认与最新版打包触发。**关键事实：run 31277750641 的安装包是旧代码（818e416，九项改造前），不要当作最新版发给用户。** 已触发新构建 run 31295985762（workflow_dispatch，ref=main，构建九项改造后的最新代码）：Windows NSIS 约 10 分钟、macOS-14 约 3 分钟、macOS-13 Intel 预计继续无限排队（runner 已退役）。给用户的下载地址 = 新 run 页面 artifacts 区。**待用户决策：Intel 包改成交叉编译**（Apple Silicon runner 上 `rustup target add x86_64-apple-darwin` 后按 x86_64 target 打包，Tauri 官方支持，改 `desktop-build.yml` 一个矩阵变体即可，约 10 分钟）。其余待办：新构建结果确认 → Windows 安装包地址给用户 → 真 Key 三供应商联网验收（余额/费用列才出真实数字）→ SignPath Foundation 申请。
 
 2026-08-09（第十二次）：依用户截图红框要求删除整条应用内部顶栏，只保留操作系统原生标题栏。主内容与左侧导航已上移 50 px，底部状态栏不变。保留项目页新建入口、任务/设置左导航和自动保存。验证：ESLint 定向检查、TypeScript、11 文件/45 测试通过；浏览器 `.topbar = 0`、无控制台 error。截图：`design/implementation/13-projects-without-internal-topbar.png`。
+
+2026-08-09（第十三次）：为在未安装 GitHub CLI、应用内浏览器未登录的环境中可重复打包最新安装包，`desktop-build.yml` 新增仅匹配 `build-*` 的标签触发器。它不会在普通分支推送时打包，也不是自动更新。发布方案已同步记录 SSH 标签触发方式和产物名称。
