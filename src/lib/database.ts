@@ -376,6 +376,52 @@ export async function listProjectAssets(): Promise<AssetRecord[]> {
   );
 }
 
+/* 商品档案：qwen 读主图产物，按项目缓存（product_profiles 表 v1 预留、v6 补 source_path）。 */
+
+export interface ProductProfileRecord {
+  projectId: string;
+  profileJson: string;
+  sourcePath: string | null;
+  updatedAt: string;
+}
+
+/** 当前项目主图（role=product）最新磁盘路径；无主图返回 null。 */
+export async function getProjectMainAssetPath(): Promise<string | null> {
+  const database = await getDatabase();
+  if (!database || !activeProjectId) return null;
+  const rows = await database.select<Array<{ path: string }>>(
+    "SELECT path FROM assets WHERE project_id = ? AND role = 'product' ORDER BY rowid DESC LIMIT 1",
+    [activeProjectId],
+  );
+  return rows[0]?.path ?? null;
+}
+
+export async function getProductProfile(): Promise<ProductProfileRecord | null> {
+  const database = await getDatabase();
+  if (!database || !activeProjectId) return null;
+  const rows = await database.select<ProductProfileRecord[]>(
+    "SELECT project_id AS projectId, profile_json AS profileJson, source_path AS sourcePath, updated_at AS updatedAt FROM product_profiles WHERE project_id = ? LIMIT 1",
+    [activeProjectId],
+  );
+  return rows[0] ?? null;
+}
+
+export async function saveProductProfile(profileJson: string, sourcePath: string | null): Promise<void> {
+  const database = await getDatabase();
+  if (!database || !activeProjectId) return;
+  await database.execute(
+    `INSERT INTO product_profiles (project_id, profile_json, source_path, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(project_id) DO UPDATE SET profile_json = excluded.profile_json, source_path = excluded.source_path, updated_at = excluded.updated_at`,
+    [activeProjectId, profileJson, sourcePath, new Date().toISOString()],
+  );
+}
+
+/** 档案是否仍对应当前主图：主图更换后需要重新分析。 */
+export async function isProductProfileStale(): Promise<boolean> {
+  const [profile, mainPath] = await Promise.all([getProductProfile(), getProjectMainAssetPath()]);
+  return Boolean(mainPath && profile && profile.sourcePath !== mainPath);
+}
+
 export async function addAssetRecord(role: string, path: string, sha256: string, mime: string): Promise<void> {
   const database = await getDatabase();
   if (!database) return;

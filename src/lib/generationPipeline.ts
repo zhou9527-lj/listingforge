@@ -1,6 +1,13 @@
 import { analyzeProduct, runDeepSeekAgent, submitImageGeneration } from "./desktop";
+import { getProductProfile, getProjectMainAssetPath, isProductProfileStale, saveProductProfile } from "./database";
 import type { GenerationType, TaskItem } from "../types";
 import { createId } from "./ids";
+
+/** qwen 商品视觉分析指令：产出结构化档案，供生成规划与 Agent 面板共用（单源，避免两份字符串漂移）。 */
+export const PRODUCT_PROFILE_SYSTEM =
+  "你是电商商品视觉分析模型。仔细观察商品图片，只输出严格 JSON（不要输出任何 JSON 以外的文字）：" +
+  "{\"category\":\"商品品类\",\"materials\":[\"材质，按可见程度排列\"],\"colors\":{\"primary\":\"主色（具体色名+近似HEX）\",\"secondary\":[\"辅色（具体色名+近似HEX）\"]},\"structure\":\"结构描述：部件构成、相对位置、形状轮廓、比例关系\",\"visibleText\":[\"画面中可见的文字/商标/Logo，逐字摘录\"],\"logoPosition\":\"商标/Logo 的位置与形态描述，无则 null\",\"sellingPoints\":[\"核心卖点\"],\"risks\":[\"生成时容易出错的点：复杂纹理、渐变、反光、镂空、商标变形等\"],\"consistencyAnchors\":[\"保持商品一致性的关键锚点，每条必须具体：颜色值、结构特征、商标位置、材质特性\"]}" +
+  "只基于图片可见信息，不虚构不可见参数；不确定的字段写 null 而不是猜测。";
 
 interface PipelineInput {
   imageDataUrl: string;
@@ -35,13 +42,16 @@ export const parseJson = <T>(value: string): T => {
 const sizeForRatio = (ratio: GenerationType["ratio"]) => ratio;
 
 export async function runGenerationPipeline(input: PipelineInput): Promise<TaskItem[]> {
-  const profileResponse = await analyzeProduct(
-    input.imageDataUrl,
-    "你是电商商品视觉分析模型。仔细观察商品图片，只输出严格 JSON（不要输出任何 JSON 以外的文字）：" +
-      "{\"category\":\"商品品类\",\"materials\":[\"材质，按可见程度排列\"],\"colors\":{\"primary\":\"主色（具体色名+近似HEX）\",\"secondary\":[\"辅色（具体色名+近似HEX）\"]},\"structure\":\"结构描述：部件构成、相对位置、形状轮廓、比例关系\",\"visibleText\":[\"画面中可见的文字/商标/Logo，逐字摘录\"],\"logoPosition\":\"商标/Logo 的位置与形态描述，无则 null\",\"sellingPoints\":[\"核心卖点\"],\"risks\":[\"生成时容易出错的点：复杂纹理、渐变、反光、镂空、商标变形等\"],\"consistencyAnchors\":[\"保持商品一致性的关键锚点，每条必须具体：颜色值、结构特征、商标位置、材质特性\"]}" +
-      "只基于图片可见信息，不虚构不可见参数；不确定的字段写 null 而不是猜测。",
-  );
-  const profile = readChatContent(profileResponse);
+  // 商品档案缓存优先：同一主图跨批次/跨会话复用 qwen 分析结果，主图更换（source_path 变化）才重新分析
+  const [cached, stale, mainPath] = await Promise.all([getProductProfile(), isProductProfileStale(), getProjectMainAssetPath()]);
+  let profile: string;
+  if (cached && !stale) {
+    profile = cached.profileJson;
+  } else {
+    const profileResponse = await analyzeProduct(input.imageDataUrl, PRODUCT_PROFILE_SYSTEM);
+    profile = readChatContent(profileResponse);
+    await saveProductProfile(profile, mainPath).catch(() => {});
+  }
 
   const selected = input.types.filter((type) => type.selected);
   const planResponse = await runDeepSeekAgent(
@@ -49,7 +59,7 @@ export async function runGenerationPipeline(input: PipelineInput): Promise<TaskI
       "1）每个已选 typeId 必须恰好出现一次。" +
       "2）一致性锚点：从 productProfile 的 consistencyAnchors/colors/structure/logoPosition 提取，在每条 prompt 开头完整重申商品结构、部件形态、商标位置与样式、主色与辅色（用档案中的具体色名或近似 HEX，禁止泛化词）；禁止改变商品颜色、结构、商标，禁止添加商品上没有的部件。" +
       "3）每条 prompt 按固定结构组织：[主体与一致性锚点] + [场景与背景] + [光线与材质] + [构图与镜头] + [风格基线] + [负面约束]。" +
-      "4）风格与构图基线：依据该类型的 purpose 与 promptRequirements 确定构图类型（居中/三分法/俯拍/平拍/45° 等）、镜头距离（特写/近景/中景）、光线方向（柔光棚拍/侧逆光/窗光等）、背景基调（纯色/场景/渐变等）；同一批次所有 prompt 的摄影语言必须保持同一风格基线。" +
+      "4）风格与构图基线：依据该类型的 purpose 与 promptRequirements 确定构图类型（居中/三分法/俯拍/平拍/45° 等）、镜头距离（特写/近景/中景）、光线方向（柔光棚拍/侧逆光/窗光等）、背景基调（纯色/场景/渐变等）；同一批次所有 prompt 的摄影语言必须保持同一风格基线，但不同类型之间（白底/场景/海报/长图）的构图与背景必须明显差异化，不得雷同。" +
       "5）负面约束（每条 prompt 末尾）：不生成任何画内文字、商标以外的字母、水印或乱码；不改变商品原色与结构；不生成畸形商品、多余物品或遮挡商品的元素。" +
       "6）prompt 用简洁英文书写，商品名与关键材质中英双写；不使用任何密钥、URL 或本地路径。",
     JSON.stringify({

@@ -6,15 +6,21 @@ import {
   addAgentMessage,
   createAgentConversation,
   deleteAgentConversation,
+  getProductProfile,
+  getProjectMainAssetPath,
+  isProductProfileStale,
   listAgentConversations,
   listAgentMessages,
   listCustomGenerationTypes,
   renameAgentConversation,
+  saveProductProfile,
   updateAgentMessage,
   type AgentConversationRecord,
   type AgentMessageRecord,
   type AgentMode,
 } from "../lib/database";
+import { AGENT_ACTION_TYPES, AGENT_CATEGORIES, AGENT_PLATFORMS, AGENT_SCREENS } from "../lib/agentSchema";
+import { PRODUCT_PROFILE_SYSTEM } from "../lib/generationPipeline";
 import { createId } from "../lib/ids";
 import { useAppStore } from "../store/appStore";
 import type { ScreenId } from "../types";
@@ -35,6 +41,8 @@ interface OperatorAction {
   typeId?: string;
   selected?: boolean;
   count?: number;
+  /** 校验失败原因（仅非法动作存在）；非法的动作不进入执行列表。 */
+  invalid?: string;
 }
 
 interface AgentPayload {
@@ -50,12 +58,26 @@ const MODE_COPY: Record<AgentMode, { title: string; description: string }> = {
 };
 
 const ADVISOR_SYSTEM = `你是 ListingForge 电商视觉方案顾问。只做分析和规划，不执行任何操作。只输出 JSON：
-{"summary":"一句话结论","details":["分析1","分析2"],"suggestions":["建议1","建议2"]}。
-回答要结合当前项目和对话历史，简明、具体，不虚构商品参数。`;
+{"summary":"一句话结论","details":["分析1","分析2"],"suggestions":["[类型·平台] 建议：…","[类型·平台] 建议：…"]}。
+规则：
+1）user 消息里附有商品档案（qwen 视觉分析结果 JSON）：分析必须引用档案里的具体数据——主色/辅色（含 HEX）、材质、结构、商标位置、卖点；禁止泛化空谈，禁止虚构档案中不存在的商品参数（不确定的写"档案未提供"）。
+2）建议按图片类型 × 平台逐项给出，每条以"[类型名·平台名] "开头，包含可执行的构图、光线、背景、文案方向。
+3）风险提示必须在 details 中逐条对应档案 risks 字段给出规避建议（如商标变形→建议主图避免大角度透视）。
+4）结合对话历史与当前项目，简明、具体。`;
 
-const OPERATOR_SYSTEM = `你是 ListingForge 本地项目操作助手。你只生成操作计划，绝不声称已经执行。只输出 JSON：
-{"summary":"计划摘要","actions":[{"type":"navigate|set_platform|set_category|set_brief|set_generation_type","label":"用户可理解的动作说明","screen":"projects|materials|generate|results|canvas|tasks|settings|exports","value":"字符串值","typeId":"图片类型ID","selected":true,"count":1}]}。
-只允许这些动作：切换页面、设置生成平台、设置类目、填写生成要求、选择图片类型及候选数量。不要输出文件删除、付费提交、API 调用或其他高风险动作。缺少信息时 actions 返回空数组并在 summary 中说明。`;
+/** 操作助手系统提示词：合法枚举在每次请求时动态注入（图片类型含自定义类型）。 */
+const buildOperatorSystem = (types: Array<{ id: string; name: string }>) => {
+  const typeList = types.map((item) => `${item.id}=${item.name}`).join("，");
+  return `你是 ListingForge 本地项目操作助手。你只生成操作计划，绝不声称已经执行。只输出 JSON：
+{"summary":"计划摘要","actions":[{"type":"set_platform|set_category|set_brief|set_generation_type|navigate","label":"用户可理解的动作说明","value":"枚举值","screen":"屏幕","typeId":"类型ID","selected":true,"count":1}]}。
+动作 value/screen/typeId 必须是下列合法枚举（一个字节都不能改，否则该动作无效）：
+- set_platform 的 value ∈ ${AGENT_PLATFORMS.join("，")}
+- set_category 的 value ∈ ${AGENT_CATEGORIES.join("，")}
+- set_brief 的 value 为自由文本（≤2000 字，直接作为生成要求填入）
+- set_generation_type 的 typeId ∈ ${typeList}；selected 表示是否勾选该类型，count 为候选数量（1-4）
+- navigate 的 screen ∈ ${AGENT_SCREENS.join("，")}
+只允许这些动作：填写生成表单与切换页面。不要输出文件删除、付费提交、API 调用或其他高风险动作。缺少信息时 actions 返回空数组并在 summary 中说明缺什么。`;
+};
 
 const REVIEW_SYSTEM = "你是电商图片质检专家。对用户提供的商品图进行评估，只输出 JSON：{\"scores\":{\"主体一致性\":0-100,\"平台适配\":0-100,\"文字可读性\":0-100},\"issues\":[\"问题描述\"],\"summary\":\"一句话评估总结\"}";
 
@@ -91,6 +113,60 @@ const extractContent = (response: Record<string, unknown>): string => {
   const choices = response.choices;
   const content = Array.isArray(choices) ? (choices[0] as { message?: { content?: unknown } } | undefined)?.message?.content : undefined;
   return typeof content === "string" ? content : "Agent 未返回可用内容";
+};
+
+/** 逐动作校验合法性：非法的动作标注 invalid 原因，不进入执行列表（应用侧同样有枚举校验，双保险）。 */
+const validateActions = (actions: OperatorAction[], types: Array<{ id: string; name: string }>): OperatorAction[] => {
+  const typeIds = new Set(types.map((item) => item.id));
+  return actions.map((action) => {
+    if (!(AGENT_ACTION_TYPES as readonly string[]).includes(action.type)) return { ...action, invalid: `动作类型 ${action.type} 不在白名单` };
+    switch (action.type) {
+      case "set_platform":
+        if (!AGENT_PLATFORMS.includes(String(action.value ?? ""))) return { ...action, invalid: `平台「${action.value}」不在合法列表` };
+        break;
+      case "set_category":
+        if (!AGENT_CATEGORIES.includes(String(action.value ?? ""))) return { ...action, invalid: `类目「${action.value}」不在合法列表` };
+        break;
+      case "set_brief":
+        if (typeof action.value !== "string" || !action.value.trim()) return { ...action, invalid: "生成要求不能为空" };
+        break;
+      case "set_generation_type":
+        if (!action.typeId || !typeIds.has(action.typeId)) return { ...action, invalid: `图片类型「${action.typeId}」不在可用列表` };
+        if (action.count !== undefined && (action.count < 1 || action.count > 4)) return { ...action, invalid: "候选数量必须在 1-4 之间" };
+        break;
+      case "navigate":
+        if (!action.screen || !AGENT_SCREENS.includes(action.screen)) return { ...action, invalid: `目标页面「${action.screen}」不在合法列表` };
+        break;
+    }
+    return action;
+  });
+};
+
+/** 读本地图片为 dataUrl（ReviewAgent 与商品档案分析共用）。 */
+const readImageDataUrl = async (localPath: string): Promise<string> => {
+  const { readFile } = await import("@tauri-apps/plugin-fs");
+  const bytes = await readFile(localPath);
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("读取本地图片失败"));
+    reader.readAsDataURL(new Blob([bytes]));
+  });
+};
+
+/**
+ * 确保商品档案可用：缓存命中且主图未更换 → 直接复用（不再付 qwen 费）；
+ * 缓存缺失或主图已更换 → 读主图并调用 qwen 分析后落库。无主图返回 null（不阻断对话）。
+ */
+const ensureProductProfile = async (): Promise<{ profileJson: string | null; analyzed: boolean }> => {
+  const [cached, stale] = await Promise.all([getProductProfile(), isProductProfileStale()]);
+  if (cached && !stale) return { profileJson: cached.profileJson, analyzed: false };
+  const mainPath = await getProjectMainAssetPath();
+  if (!mainPath) return { profileJson: null, analyzed: false };
+  const dataUrl = await readImageDataUrl(mainPath);
+  const content = extractContent(await analyzeProduct(dataUrl, PRODUCT_PROFILE_SYSTEM));
+  await saveProductProfile(content, mainPath).catch(() => {});
+  return { profileJson: content, analyzed: true };
 };
 
 export function AgentPanel({ mode = "plan", reviewTarget }: { mode?: "plan" | "review"; reviewTarget?: { src: string; localPath: string; title: string } | null }) {
@@ -189,11 +265,24 @@ function ProjectAgent() {
     setPendingPlan(null);
     setSteps([
       { label: "读取项目上下文", state: "done", sub: currentProject.name },
-      { label: "调用 DeepSeek", state: "active", sub: "正在接收流式响应…" },
+      { label: "分析商品档案", state: "active", sub: "正在分析商品图片…" },
+      { label: "调用 DeepSeek", state: "waiting", sub: "等待商品档案" },
       { label: "解析方案", state: "waiting", sub: "等待完整响应" },
       ...(agentMode === "operator" ? [{ label: "等待用户确认", state: "waiting" as StepState, sub: "不会自动执行" }] : []),
     ]);
+    const updateProfileStep = (patch: Partial<AgentStep>) => updateStep(1, patch);
     try {
+      // 商品档案：缓存优先（同主图不重复付 qwen 费），主图更换自动重分析；无主图跳过并说明
+      let profile: string | null = null;
+      try {
+        const result = await ensureProductProfile();
+        profile = result.profileJson;
+        updateProfileStep(result.analyzed ? { state: "done", sub: "本次分析完成" } : { state: "done", sub: "复用已有档案" });
+      } catch {
+        updateProfileStep({ state: "failed", sub: "商品分析失败，将基于有限信息回答" });
+      }
+      updateStep(2, { state: "active", sub: "正在接收流式响应…" });
+
       let activeConversationId = conversationId;
       if (!activeConversationId) {
         const created = await createAgentConversation(agentMode, input.trim().slice(0, 24));
@@ -209,41 +298,67 @@ function ProjectAgent() {
       const agentMessage = await addAgentMessage(activeConversationId, "agent", "", "streaming");
       setMessages((current) => [...current, userMessage, agentMessage]);
 
-      const requestId = createId();
-      setActiveRequestId(requestId);
-      streamContentRef.current = "";
-      const context = `当前项目：${currentProject.name}。可用图片类型：${knownTypes.map((item) => `${item.id}=${item.name}`).join("，")}。用户要求：${input.trim()}`;
-      const system = agentMode === "advisor" ? ADVISOR_SYSTEM : OPERATOR_SYSTEM;
-      const streamState: { status: AgentMessageRecord["status"] } = { status: "complete" };
-      await streamDeepSeekAgent(system, context, history, requestId, (event) => {
-        if (event.event === "delta" && event.delta) {
-          streamContentRef.current += event.delta;
-          const content = streamContentRef.current;
-          setMessages((current) => current.map((item) => item.id === agentMessage.id ? { ...item, content } : item));
-        }
-        if (event.event === "stopped") streamState.status = "stopped";
-      });
+      const context = [
+        `当前项目：${currentProject.name}`,
+        profile ? `商品档案（qwen 视觉分析结果 JSON，分析必须引用其中的具体数据）：${profile}` : "（当前项目没有商品档案：未导入主图或分析失败）",
+        `可用图片类型：${knownTypes.map((item) => `${item.id}=${item.name}`).join("，")}`,
+        `用户要求：${input.trim()}`,
+      ].join("\n");
+      const system = agentMode === "advisor" ? ADVISOR_SYSTEM : buildOperatorSystem(knownTypes);
 
-      const content = streamContentRef.current;
-      const payload = parseAgentPayload(content);
-      updateStep(1, { state: streamState.status === "stopped" ? "failed" : "done", sub: streamState.status === "stopped" ? "已停止" : "响应完成" });
-      if (streamState.status === "stopped") {
-        updateStep(2, { state: "failed", sub: "响应未完成" });
-      } else if (!payload) {
-        streamState.status = "failed";
-        updateStep(2, { state: "failed", sub: "返回内容不是有效 JSON" });
-      } else {
-        updateStep(2, { state: "done", sub: "方案已解析" });
-        if (agentMode === "operator") {
-          setPendingPlan({ messageId: agentMessage.id, payload });
-          updateStep(3, { state: "active", sub: `${payload.actions?.length ?? 0} 个动作待确认` });
+      // 单次流式调用，返回最终内容与是否被用户停止
+      const callOnce = async (systemText: string, contextText: string, historyList: typeof history, hint?: string) => {
+        const requestId = createId();
+        setActiveRequestId(requestId);
+        streamContentRef.current = "";
+        let stopped = false;
+        await streamDeepSeekAgent(systemText, hint ? `${contextText}\n\n补充指示：${hint}` : contextText, historyList, requestId, (event) => {
+          if (event.event === "delta" && event.delta) {
+            streamContentRef.current += event.delta;
+            const content = streamContentRef.current;
+            setMessages((current) => current.map((item) => item.id === agentMessage.id ? { ...item, content } : item));
+          }
+          if (event.event === "stopped") stopped = true;
+        });
+        return { content: streamContentRef.current, stopped };
+      };
+
+      // 首次调用
+      let call = await callOnce(system, context, history);
+      // 结构化输出校验：非 JSON 或操作助手无合法动作 → 自动修复调用一次（设计文档「结构化输出」条款）
+      let payload = parseAgentPayload(call.content);
+      let validatedActions = payload?.actions?.length ? validateActions(payload.actions, knownTypes) : [];
+      const needsRepair = !call.stopped && (!payload || (agentMode === "operator" && !validatedActions.some((action) => !action.invalid)));
+      if (needsRepair) {
+        const invalidDetails = validatedActions.filter((action) => action.invalid).map((action) => `${action.type}（${action.invalid}）`).join("；");
+        const hint = `你上一次的输出没有通过校验${invalidDetails ? `，原因：${invalidDetails}` : ""}。请重新输出，严格按 JSON 结构与合法枚举，不要编造字段。`;
+        updateStep(3, { state: "active", sub: "响应未通过校验，正在修复…" });
+        call = await callOnce(system, context, [...history, { role: "assistant", content: call.content }], hint);
+        payload = parseAgentPayload(call.content);
+        validatedActions = payload?.actions?.length ? validateActions(payload.actions, knownTypes) : [];
+      }
+
+      updateStep(2, { state: call.stopped ? "failed" : "done", sub: call.stopped ? "已停止" : "响应完成" });
+      let streamStatus: AgentMessageRecord["status"] = call.stopped ? "stopped" : "complete";
+      if (!call.stopped) {
+        if (!payload) {
+          streamStatus = "failed";
+          updateStep(3, { state: "failed", sub: "返回内容不是有效 JSON" });
+        } else {
+          updateStep(3, { state: "done", sub: "方案已解析" });
+          if (agentMode === "operator") {
+            const validCount = validatedActions.filter((action) => !action.invalid).length;
+            const invalidCount = validatedActions.length - validCount;
+            setPendingPlan({ messageId: agentMessage.id, payload: { ...payload, actions: validatedActions } });
+            updateStep(4, { state: "active", sub: `${validCount} 个动作待确认${invalidCount ? `，${invalidCount} 个被拒绝` : ""}` });
+          }
         }
       }
-      await updateAgentMessage(agentMessage.id, { content, status: streamState.status, metadata: payload as Record<string, unknown> | null });
+      await updateAgentMessage(agentMessage.id, { content: call.content, status: streamStatus, metadata: payload as Record<string, unknown> | null });
       await refreshConversations(activeConversationId);
     } catch (error) {
       const message = typeof error === "string" ? error : error instanceof Error ? error.message : "Agent 调用失败";
-      updateStep(1, { state: "failed", sub: message });
+      updateStep(2, { state: "failed", sub: message });
       setMessages((current) => [...current, { id: createId(), conversationId: conversationId ?? "", role: "agent", content: `调用失败：${message}`, status: "failed", metadata: null, createdAt: new Date().toISOString() }]);
       notify(message);
     } finally {
@@ -266,17 +381,21 @@ function ProjectAgent() {
   const executePlan = async () => {
     if (!pendingPlan) return;
     const actions = pendingPlan.payload.actions ?? [];
-    const generationActions = actions.filter((action) => action.type !== "navigate");
+    const valid = actions.filter((action) => !action.invalid);
+    const rejected = actions.filter((action) => action.invalid);
+    const generationActions = valid.filter((action) => action.type !== "navigate");
     if (generationActions.length) window.dispatchEvent(new CustomEvent("listingforge:agent-actions", { detail: { actions: generationActions } }));
-    const navigation = [...actions].reverse().find((action) => action.type === "navigate" && action.screen);
+    const navigation = [...valid].reverse().find((action) => action.type === "navigate" && action.screen);
     if (navigation?.screen) setScreen(navigation.screen);
-    updateStep(3, { state: "done", sub: `已执行 ${actions.length} 个本地动作` });
+    const executed = valid.length - (navigation ? 1 : 0);
+    updateStep(4, { state: "done", sub: rejected.length ? `执行 ${executed} 个，拒绝 ${rejected.length} 个（${rejected.map((action) => action.invalid).join("；")}）` : `已执行 ${executed} 个本地动作` });
     setPendingPlan(null);
+    const rejectionText = rejected.length ? `被拒绝 ${rejected.length} 个（${rejected.map((action) => action.invalid).join("；")}）` : "";
     if (conversationId) {
-      const record = await addAgentMessage(conversationId, "agent", `已按你的确认执行 ${actions.length} 个本地动作。`, "complete", { executedActions: actions });
+      const record = await addAgentMessage(conversationId, "agent", `已按你的确认执行 ${executed} 个本地动作${rejectionText ? `；${rejectionText}` : ""}。`, "complete", { executedActions: valid, rejectedActions: rejected });
       setMessages((current) => [...current, record]);
     }
-    notify(actions.length ? `已执行 ${actions.length} 个本地操作` : "计划中没有可执行动作");
+    notify(valid.length ? `已执行 ${executed} 个本地操作${rejectionText ? `；${rejectionText}` : ""}` : "计划中没有可执行动作（动作均未通过校验）");
   };
 
   const clearConversation = async () => {
@@ -304,7 +423,7 @@ function ProjectAgent() {
       <div className="agent-chat">
         {renderedMessages.length ? renderedMessages.map((message) => <ChatMessage key={message.id} message={message} />) : <div className="agent-welcome"><Bot size={22} /><strong>{MODE_COPY[agentMode].title}</strong><p>{MODE_COPY[agentMode].description}</p></div>}
       </div>
-      {pendingPlan ? <div className="operator-confirm"><header><CheckCircle2 size={16} /><strong>待执行计划</strong></header><p>{pendingPlan.payload.summary ?? "请核对以下本地操作"}</p>{pendingPlan.payload.actions?.length ? <ol>{pendingPlan.payload.actions.map((action, index) => <li key={`${action.type}-${index}`}>{action.label}</li>)}</ol> : <p className="agent-note">没有可执行动作，需要补充信息。</p>}<footer><Button size="sm" onClick={() => { setPendingPlan(null); updateStep(3, { state: "failed", sub: "用户已取消" }); }}>取消</Button><Button size="sm" variant="primary" disabled={!pendingPlan.payload.actions?.length} onClick={() => void executePlan()}>确认并执行</Button></footer></div> : null}
+      {pendingPlan ? <div className="operator-confirm"><header><CheckCircle2 size={16} /><strong>待执行计划</strong></header><p>{pendingPlan.payload.summary ?? "请核对以下本地操作"}</p>{pendingPlan.payload.actions?.length ? <ol>{pendingPlan.payload.actions.map((action, index) => <li key={`${action.type}-${index}`} className={action.invalid ? "agent-action--invalid" : ""}>{action.label}{action.invalid ? <small>（无法执行：{action.invalid}）</small> : null}</li>)}</ol> : <p className="agent-note">没有可执行动作，需要补充信息。</p>}<footer><Button size="sm" onClick={() => { setPendingPlan(null); updateStep(4, { state: "failed", sub: "用户已取消" }); }}>取消</Button><Button size="sm" variant="primary" disabled={!pendingPlan.payload.actions?.some((action) => !action.invalid)} onClick={() => void executePlan()}>确认并执行</Button></footer></div> : null}
       <AgentComposer running={running} onSend={(text) => void runAgent(text)} onStop={() => void stop()} />
       <div className="agent-footer-actions"><button disabled={!lastInput || running} onClick={() => void runAgent(lastInput)}><RefreshCcw size={13} /> 重试上次</button><button disabled={!conversationId || running} onClick={() => setConfirmClear(true)}><Trash2 size={13} /> 清空对话</button></div>
     </>}
@@ -338,9 +457,7 @@ function ReviewAgent({ reviewTarget }: { reviewTarget: { src: string; localPath:
     setRunning(true);
     setReviewResult(null);
     try {
-      const { readFile } = await import("@tauri-apps/plugin-fs");
-      const bytes = await readFile(reviewTarget.localPath);
-      const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error("读取本地图片失败")); reader.readAsDataURL(new Blob([bytes])); });
+      const dataUrl = await readImageDataUrl(reviewTarget.localPath);
       const content = extractContent(await analyzeProduct(dataUrl, `${REVIEW_SYSTEM} 图片说明：${reviewTarget.title}`));
       const parsed = parseJsonObject(content);
       const rawScores = parsed?.scores && typeof parsed.scores === "object" ? parsed.scores as Record<string, unknown> : {};

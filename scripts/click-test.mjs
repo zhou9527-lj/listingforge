@@ -88,12 +88,29 @@ page.on("console", (message) => {
 
 await page.evaluateOnNewDocument((smokePngB64) => {
   const PNG_B64 = smokePngB64;
-  const state = { projects: [], assets: [], tasks: [], results: [], deletedFiles: [], paidInvocations: 0, hangNextProjectList: 0, nextDialogPick: null };
+  const state = { projects: [], assets: [], tasks: [], results: [], deletedFiles: [], paidInvocations: 0, hangNextProjectList: 0, nextDialogPick: null, profiles: [], conversations: [], agentMessages: [], analyzeCalls: 0, agentProfileResponse: null, agentStream: null };
   window.__LISTINGFORGE_SMOKE__ = state;
   window.__TAURI_INTERNALS__ = {
     convertFileSrc: () => `data:image/png;base64,${PNG_B64}`,
+    transformCallback: () => 0,
     invoke: async (command, payload = {}) => {
-      if (command === "submit_image_generation" || command === "stream_deepseek_agent" || command === "analyze_product") {
+      // Agent 测试段预设：非 null 时返回固定响应且不计费（用后必须复位 null，保证末尾 paidInvocations 断言仍为 0）
+      if (command === "analyze_product") {
+        state.analyzeCalls += 1;
+        if (state.agentProfileResponse) return { choices: [{ message: { content: state.agentProfileResponse } }] };
+        state.paidInvocations += 1;
+        throw new Error(`Smoke test blocked paid command: ${command}`);
+      }
+      if (command === "stream_deepseek_agent") {
+        if (state.agentStream) {
+          const channel = payload.onEvent;
+          if (channel && typeof channel.onmessage === "function") channel.onmessage({ event: "delta", delta: state.agentStream });
+          return null;
+        }
+        state.paidInvocations += 1;
+        throw new Error(`Smoke test blocked paid command: ${command}`);
+      }
+      if (command === "submit_image_generation") {
         state.paidInvocations += 1;
         throw new Error(`Smoke test blocked paid command: ${command}`);
       }
@@ -102,6 +119,10 @@ await page.evaluateOnNewDocument((smokePngB64) => {
       if (command === "plugin:sql|select") {
         const query = String(payload.query ?? "");
         const values = payload.values ?? [];
+        // 商品档案主图路径查询（getProjectMainAssetPath：role 内嵌字符串，非参数）
+        if (/FROM assets WHERE project_id = \? AND role = 'product'/i.test(query)) {
+          return state.assets.filter((asset) => asset.projectId === values[0] && asset.role === "product").map((asset) => ({ path: asset.path }));
+        }
         // 生成页素材恢复（listProjectAssets / deleteProjectAssetsNotIn 的 SELECT）
         if (/FROM assets WHERE project_id = \? AND role = \?/i.test(query)) {
           return state.assets.filter((asset) => asset.projectId === values[0] && asset.role === values[1]).map(({ id, path }) => ({ id, path }));
@@ -133,6 +154,15 @@ await page.evaluateOnNewDocument((smokePngB64) => {
           }));
         }
         if (/SELECT path FROM projects/i.test(query)) return state.projects.filter((item) => item.id === values[0]).map((item) => ({ path: item.path }));
+        if (/FROM product_profiles/i.test(query)) {
+          return state.profiles.filter((profile) => profile.projectId === values[0]).map((profile) => ({ projectId: profile.projectId, profileJson: profile.profileJson, sourcePath: profile.sourcePath, updatedAt: profile.updatedAt }));
+        }
+        if (/FROM agent_conversations/i.test(query)) {
+          return state.conversations.filter((conversation) => conversation.projectId === values[0] && (!values[1] || conversation.mode === values[1])).map((conversation) => ({ id: conversation.id, mode: conversation.mode, title: conversation.title, createdAt: conversation.createdAt, updatedAt: conversation.updatedAt }));
+        }
+        if (/FROM agent_messages m/i.test(query)) {
+          return state.agentMessages.filter((message) => message.conversationId === values[0]).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map((message) => ({ id: message.id, conversationId: message.conversationId, role: message.role, content: message.content, status: message.status, metadataJson: message.metadataJson ?? null, createdAt: message.createdAt }));
+        }
         // 模拟打包版"创建后重新进入项目页"时项目列表查询挂起（永不返回）；计数递减以容纳 StrictMode 的 effect 双调用，第三次起恢复正常
         if (state.hangNextProjectList > 0 && /FROM projects p/i.test(query) && !/WHERE p\.id/i.test(query)) {
           state.hangNextProjectList -= 1;
@@ -166,6 +196,28 @@ await page.evaluateOnNewDocument((smokePngB64) => {
         if (/DELETE FROM results/i.test(query)) {
           const ids = payload.values ?? [];
           state.results = state.results.filter((result) => !ids.includes(result.id));
+        }
+        if (/INSERT INTO product_profiles/i.test(query)) {
+          const existing = state.profiles.find((profile) => profile.projectId === values[0]);
+          if (existing) {
+            existing.profileJson = values[1]; existing.sourcePath = values[2]; existing.updatedAt = values[3];
+          } else {
+            state.profiles.push({ projectId: values[0], profileJson: values[1], sourcePath: values[2], updatedAt: values[3] });
+          }
+        }
+        if (/INSERT INTO agent_conversations/i.test(query)) {
+          state.conversations.push({ id: values[0], projectId: values[1], mode: values[2], title: values[3], createdAt: values[4], updatedAt: values[5] });
+        }
+        if (/UPDATE agent_conversations/i.test(query)) {
+          const conversation = state.conversations.find((item) => item.id === values[2]);
+          if (conversation) { conversation.title = values[0] ?? conversation.title; conversation.updatedAt = values[1] ?? conversation.updatedAt; }
+        }
+        if (/INSERT INTO agent_messages/i.test(query)) {
+          state.agentMessages.push({ id: values[0], conversationId: values[1], role: values[2], content: values[3], status: values[4], metadataJson: values[5] ?? null, createdAt: values[6] });
+        }
+        if (/UPDATE agent_messages/i.test(query)) {
+          const message = state.agentMessages.find((item) => item.id === values[3]);
+          if (message) { message.content = values[0] ?? message.content; message.status = values[1] ?? message.status; message.metadataJson = values[2] ?? message.metadataJson; }
         }
         return [1, 1];
       }
@@ -279,6 +331,41 @@ try {
   }
   await page.click(".agent-mode-switch button:first-child");
   await page.click(".agent-mode-switch button:nth-of-type(2)");
+
+  // Task A2：Agent 商品档案与操作助手（mock 预设响应，不计费）
+  await page.evaluate(() => {
+    const state = window.__LISTINGFORGE_SMOKE__;
+    state.agentProfileResponse = "{\"category\":\"3C 数码\",\"materials\":[\"铝合金\"],\"colors\":{\"primary\":\"深灰 #333333\",\"secondary\":[\"银白 #E8E8E8\"]},\"structure\":\"金属外壳、正面屏幕、顶部 Logo\",\"visibleText\":[\"Logo\"],\"logoPosition\":\"背面居中\",\"sellingPoints\":[\"轻便\"],\"risks\":[\"高光反射\"],\"consistencyAnchors\":[\"深灰 #333333 外壳\",\"背面居中 Logo\"]}";
+    state.agentStream = "{\"summary\":\"测试计划\",\"actions\":[{\"type\":\"set_platform\",\"label\":\"设置平台为拼多多\",\"value\":\"拼多多\"},{\"type\":\"set_category\",\"label\":\"设置类目为美妆护肤\",\"value\":\"美妆护肤\"},{\"type\":\"set_generation_type\",\"label\":\"白底主图选 2 张\",\"typeId\":\"white\",\"selected\":true,\"count\":2},{\"type\":\"set_platform\",\"label\":\"设置平台为亚马逊（非法）\",\"value\":\"亚马逊\"}]}";
+  });
+  // ① 方案顾问：首次对话自动分析商品并落库；同主图第二次对话复用缓存不重复调用
+  await page.click(".agent-mode-switch button:first-child");
+  await page.type(".agent-composer__input", "分析这个商品的卖点");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => /(复用已有档案|本次分析完成)/.test(document.querySelector(".agent-steps")?.textContent ?? ""), { timeout: 8000 });
+  assert(await page.evaluate(() => window.__LISTINGFORGE_SMOKE__.analyzeCalls) === 1, "agent: 首次对话应调用一次商品分析");
+  assert(await page.evaluate(() => window.__LISTINGFORGE_SMOKE__.profiles.length) === 1, "agent: 商品档案未落库");
+  await page.waitForFunction(() => !document.querySelector(".agent-composer__input")?.disabled, { timeout: 8000 });
+  await page.type(".agent-composer__input", "再分析一次");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.querySelector(".agent-steps")?.textContent?.includes("复用已有档案"), { timeout: 8000 });
+  assert(await page.evaluate(() => window.__LISTINGFORGE_SMOKE__.analyzeCalls) === 1, "agent: 同主图第二次对话不应重复调用商品分析");
+  // ② 操作助手：非法动作标红不执行，合法动作确认后生效
+  await page.click(".agent-mode-switch button:nth-of-type(2)");
+  await page.type(".agent-composer__input", "帮我按拼多多白底主图生成");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".operator-confirm", { timeout: 8000 });
+  assert(await page.$$eval(".operator-confirm li.agent-action--invalid", (nodes) => nodes.length) === 1, "agent: 非法动作未标红");
+  await page.click(".operator-confirm footer button:last-child");
+  await page.waitForFunction(() => document.querySelector(".agent-steps")?.textContent?.includes("执行 3 个"), { timeout: 5000 });
+  const platformValue = await page.$eval(".plan-selectors label:first-of-type select", (node) => node.value);
+  const categoryValue = await page.$eval(".plan-selectors label:nth-of-type(2) select", (node) => node.value);
+  const whiteCount = await page.$eval(".plan-row .count-control b", (node) => node.textContent?.trim());
+  assert(platformValue === "拼多多", `agent: 平台动作未生效（${platformValue}）`);
+  assert(categoryValue === "美妆护肤", `agent: 类目动作未生效（${categoryValue}）`);
+  assert(whiteCount === "2", `agent: 类型数量动作未生效（${whiteCount}）`);
+  // 复位预设，保证全程付费调用计数不受影响
+  await page.evaluate(() => { window.__LISTINGFORGE_SMOKE__.agentProfileResponse = null; window.__LISTINGFORGE_SMOKE__.agentStream = null; });
 
   await go("results");
   for (const button of await page.$$(".filter-list button")) await button.click();

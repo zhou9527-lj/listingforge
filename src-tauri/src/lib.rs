@@ -182,6 +182,14 @@ fn migrations() -> Vec<Migration> {
             DELETE FROM results WHERE rowid NOT IN (SELECT MAX(rowid) FROM results GROUP BY task_id);
         "#,
         },
+        Migration {
+            version: 6,
+            description: "product_profiles_source_path",
+            kind: MigrationKind::Up,
+            sql: r#"
+            ALTER TABLE product_profiles ADD COLUMN source_path TEXT;
+        "#,
+        },
     ]
 }
 

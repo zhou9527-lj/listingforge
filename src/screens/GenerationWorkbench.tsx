@@ -11,8 +11,7 @@ import { fileToDataUrl, runGenerationPipeline } from "../lib/generationPipeline"
 import { validateImageFiles } from "../lib/imageFiles";
 import { useAppStore } from "../store/appStore";
 import type { GenerationType } from "../types";
-
-const categories = ["3C 数码", "美妆护肤", "服饰鞋包", "食品饮料", "家居日用", "母婴玩具", "运动户外", "其他"];
+import { AGENT_CATEGORIES as categories } from "../lib/agentSchema";
 type ReferenceRole = "logo" | "package" | "detail" | "style";
 type ReferenceFiles = Record<ReferenceRole, File[]>;
 /** assets 表中主图的角色名（与素材库/selectGlobalAsset 保持一致） */
