@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
-import { Grid2X2, ImageOff, List, RefreshCcw, Star, Trash2, Upload, WandSparkles, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Grid2X2, ImageOff, List, Maximize2, RefreshCcw, Star, Trash2, Upload, WandSparkles, X } from "lucide-react";
 import { AgentPanel } from "../components/AgentPanel";
+import { ResultLightbox } from "../components/ResultLightbox";
 import { Button, CheckBox, SectionTitle, StatusDot } from "../components/ui";
 import { deleteProjectResultFile, hasTauriRuntime } from "../lib/desktop";
 import { deleteResultRecords, getProjectPath, loadPersistedResults } from "../lib/database";
@@ -39,6 +40,15 @@ const localResultSrc = async (localPath: string): Promise<string> => {
   return convertFileSrc(localPath);
 };
 
+/** 结果生成时间：当天显示「今天 HH:mm」，其余显示「MM-DD HH:mm」。 */
+const formatCreatedAt = (iso: string): string => {
+  const date = new Date(iso);
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const hhmm = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return date.toDateString() === now.toDateString() ? `今天 ${hhmm}` : `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${hhmm}`;
+};
+
 export function ResultsReview() {
   const filter = useAppStore((state) => state.resultFilter);
   const setFilter = useAppStore((state) => state.setResultFilter);
@@ -56,6 +66,11 @@ export function ResultsReview() {
   const [view, setView] = useState<"grid" | "list">("grid");
   const [deleteTarget, setDeleteTarget] = useState<RealResult[] | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  // 已加载图片的宽高比（null 前默认按 1:1 占位，加载后重排）
+  const [ratios, setRatios] = useState<Record<string, number>>({});
+  const galleryRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
 
   useEffect(() => {
     if (!hasTauriRuntime()) return;
@@ -82,6 +97,22 @@ export function ResultsReview() {
     };
   }, [notify]);
 
+  // 瀑布流容器宽度：callback ref 在 div 挂载/卸载时同步测量并挂 ResizeObserver（React 19 支持 ref cleanup），
+  // 天然覆盖 空态 ⇄ 卡片、grid ⇄ list 的条件渲染切换，无 effect 依赖时序问题
+  const attachGallery = useCallback((el: HTMLDivElement | null) => {
+    galleryRef.current = el;
+    if (!el) return;
+    // 列宽计算基于内容盒：clientWidth 含水平 padding，需剥离
+    const update = () => {
+      const style = getComputedStyle(el);
+      setContainerWidth(el.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight));
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   const visibleItems = useMemo(() => {
     const newest = realResults[0]?.createdAt;
     const scoped = scope === "recent" && newest ? realResults.filter((item) => item.createdAt === newest) : realResults;
@@ -94,6 +125,18 @@ export function ResultsReview() {
     for (const item of realResults) counts[guessType(item.title)] += 1;
     return counts;
   }, [realResults]);
+
+  // 瀑布流：宽窗口 3 列、窄窗口 2 列（与 ≤1359px 布局断点对齐——1586 窗口因 inspector 占位容器反而比 1280 窄，故用窗口宽度而非容器宽度）
+  // 卡片高度 = 列宽 / 宽高比，长图封顶 2 倍列宽（顶部完整显示）
+  const colCount = window.innerWidth >= 1360 ? 3 : 2;
+  const colWidth = containerWidth > 0 ? (containerWidth - 10 * (colCount - 1)) / colCount : 0;
+  const cardHeight = (item: RealResult) => Math.min(colWidth / (ratios[item.id] ?? 1), colWidth * 2);
+  // 轮转分配列：第 1 张进第 1 列、第 2 张进第 2 列…保持从左到右的时间浏览顺序
+  const columns = useMemo(() => {
+    const cols: Array<Array<(typeof visibleItems)[number]>> = Array.from({ length: colCount }, () => []);
+    visibleItems.forEach((item, index) => cols[index % colCount].push(item));
+    return cols;
+  }, [colCount, visibleItems]);
 
   const editRealResult = (result: RealResult) => {
     openResultInCanvas(result.src, undefined, result.localPath);
@@ -115,6 +158,7 @@ export function ResultsReview() {
       pruneResultSelection(ids);
       setRealResults((current) => current.filter((item) => !ids.includes(item.id)));
       setDeleteTarget(null);
+      setLightboxIndex(null);
       notify(`已删除 ${ids.length} 张结果图片${refs.some((ref) => ref.localPath) ? "，本地文件已同步删除" : "（无本地文件）"}`);
     } catch (error) {
       notify(error instanceof Error ? error.message : "删除失败");
@@ -122,6 +166,21 @@ export function ResultsReview() {
       setDeleting(false);
     }
   };
+
+  /** 悬停控制层通用片段：选择框 / 收藏 / 删除 / 底部信息条（编辑）。 */
+  const cardOverlay = (item: RealResult & { type: ResultType }, isSelected: boolean, isFavorite: boolean) => (
+    <div className="result-card__overlay">
+      <div className="result-card__check" onClick={(event) => event.stopPropagation()}><CheckBox checked={isSelected} label={`选择${item.title}`} onChange={() => toggleResult(item.id)} /></div>
+      <div className="result-card__controls">
+        <button className={`result-card__favorite ${isFavorite ? "is-active" : ""}`} aria-label="收藏" onClick={(event) => { event.stopPropagation(); toggleFavorite(item.id); }}><Star size={17} fill={isFavorite ? "currentColor" : "none"} /></button>
+        <button className="result-card__delete" aria-label="删除这张图片" title="删除这张图片" onClick={(event) => { event.stopPropagation(); setDeleteTarget([item]); }}><Trash2 size={15} /></button>
+      </div>
+      <div className="result-card__meta">
+        <span><strong>{item.title}</strong><em>{item.type} · {formatCreatedAt(item.createdAt)}</em></span>
+        <button onClick={(event) => { event.stopPropagation(); editRealResult(item); }}>编辑</button>
+      </div>
+    </div>
+  );
 
   return (
     <div className="screen-layout screen-layout--results">
@@ -155,28 +214,76 @@ export function ResultsReview() {
               <span />
               <label>范围<select aria-label="结果范围" value={scope} onChange={(event) => setScope(event.target.value as "all" | "recent")}><option value="all">全部结果</option><option value="recent">最近一次任务</option></select></label>
               <label>排序<select aria-label="结果排序" value={sort} onChange={(event) => setSort(event.target.value as "time" | "type")}><option value="time">按生成时间</option><option value="type">按类型</option></select></label>
-              <div className="view-toggle"><button aria-label="网格视图" className={view === "grid" ? "is-active" : ""} onClick={() => setView("grid")}><Grid2X2 size={17} /></button><button aria-label="列表视图" className={view === "list" ? "is-active" : ""} onClick={() => setView("list")}><List size={17} /></button></div>
+              <div className="view-toggle"><button aria-label="瀑布流视图" title="瀑布流" className={view === "grid" ? "is-active" : ""} onClick={() => setView("grid")}><Grid2X2 size={17} /></button><button aria-label="列表视图" title="列表" className={view === "list" ? "is-active" : ""} onClick={() => setView("list")}><List size={17} /></button></div>
             </div>
-            <div className={`result-gallery ${view === "list" ? "result-gallery--list" : ""}`}>
-              {visibleItems.map((item) => {
-                const isSelected = selected.includes(item.id);
-                const isFavorite = favorites.includes(item.id);
-                return (
-                  <article key={item.id} className={`result-card ${isSelected ? "is-selected" : ""}`}>
-                    <img src={item.src} alt={`${item.title}候选图`} />
-                    <div className="result-card__check"><CheckBox checked={isSelected} label={`选择${item.title}`} onChange={() => toggleResult(item.id)} /></div>
-                    <button className={`result-card__favorite ${isFavorite ? "is-active" : ""}`} aria-label="收藏" onClick={() => toggleFavorite(item.id)}><Star size={17} fill={isFavorite ? "currentColor" : "none"} /></button>
-                    <button className="result-card__delete" aria-label="删除这张图片" title="删除这张图片" onClick={() => setDeleteTarget([item])}><Trash2 size={15} /></button>
-                    <div className="result-card__meta"><span>{item.title}<em className="local-badge">本地</em></span><button onClick={() => editRealResult(item)}>编辑</button></div>
-                  </article>
-                );
-              })}
-            </div>
+            {view === "list" ? (
+              <div className="result-gallery result-gallery--list">
+                {visibleItems.map((item) => {
+                  const isSelected = selected.includes(item.id);
+                  const isFavorite = favorites.includes(item.id);
+                  return (
+                    <article key={item.id} className={`result-card ${isSelected ? "is-selected" : ""}`} onClick={() => setLightboxIndex(visibleItems.indexOf(item))}>
+                      <img src={item.src} alt={`${item.title}候选图`} />
+                      {cardOverlay(item, isSelected, isFavorite)}
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="result-gallery" ref={attachGallery}>
+                {columns.map((column, columnIndex) => (
+                  <div key={columnIndex} className="result-gallery__column">
+                    {column.map((item) => {
+                      const isSelected = selected.includes(item.id);
+                      const isFavorite = favorites.includes(item.id);
+                      const height = cardHeight(item);
+                      const capped = height >= colWidth * 2 - 0.5;
+                      return (
+                        <article key={item.id} className={`result-card ${isSelected ? "is-selected" : ""} ${capped ? "is-capped" : ""}`} onClick={() => setLightboxIndex(visibleItems.indexOf(item))}>
+                          <img
+                            src={item.src}
+                            alt={`${item.title}候选图`}
+                            style={{ height: colWidth ? height : "auto" }}
+                            onLoad={(event) => {
+                              const { naturalWidth, naturalHeight } = event.currentTarget;
+                              if (naturalWidth > 0 && naturalHeight > 0) {
+                                setRatios((current) => current[item.id] === naturalWidth / naturalHeight ? current : { ...current, [item.id]: naturalWidth / naturalHeight });
+                              }
+                            }}
+                          />
+                          {capped ? <span className="result-card__expand"><Maximize2 size={12} />查看全图</span> : null}
+                          {cardOverlay(item, isSelected, isFavorite)}
+                        </article>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            )}
           </>
         )}
       </section>
 
       <AgentPanel mode="review" reviewTarget={visibleItems[0] ?? null} />
+
+      {lightboxIndex !== null ? (
+        <ResultLightbox
+          items={visibleItems}
+          index={lightboxIndex}
+          favorites={favorites}
+          onClose={() => setLightboxIndex(null)}
+          onNavigate={setLightboxIndex}
+          onToggleFavorite={toggleFavorite}
+          onDelete={(item) => {
+            const real = visibleItems.find((result) => result.id === item.id);
+            if (real) setDeleteTarget([real]);
+          }}
+          onEdit={(item) => {
+            const real = visibleItems.find((result) => result.id === item.id);
+            if (real) editRealResult(real);
+          }}
+        />
+      ) : null}
 
       {deleteTarget ? (
         <div className="modal-backdrop" role="presentation">

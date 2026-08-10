@@ -283,8 +283,18 @@ try {
   await go("results");
   for (const button of await page.$$(".filter-list button")) await button.click();
   // Task D：结果删除（单张卡片 → 确认 → 记录与本地文件同步删除）
-  await page.waitForSelector(".result-card__delete");
+  await page.waitForSelector(".result-card");
   assert((await page.$$(".result-card")).length === 2, "results: 预置结果未全部展示");
+  // 灯箱：点击卡片打开大图预览 → 翻页 → 关闭
+  await page.click(".result-card");
+  await page.waitForSelector(".lightbox-backdrop");
+  await page.waitForFunction(() => document.querySelector(".lightbox-info span")?.textContent?.includes("1 / 2"), { timeout: 8000 });
+  await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(() => document.querySelector(".lightbox-info span")?.textContent?.includes("2 / 2"));
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".lightbox-backdrop", { hidden: true });
+  // 悬停卡片露出删除按钮，删除较新的 result-del-2
+  await page.hover(".result-card");
   await page.click(".result-card__delete");
   await page.waitForSelector('[role="dialog"][aria-label="删除结果图片"]');
   await page.click(".modal-actions button:last-child");

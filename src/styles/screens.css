@@ -133,18 +133,50 @@
 .view-toggle button { display: grid; place-items: center; color: var(--text-muted); }
 .view-toggle button + button { border-left: 1px solid var(--border-strong); }
 .view-toggle button.is-active { color: var(--text-primary); background: var(--bg-hover); }
-.result-gallery { min-height: 0; display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr)); grid-auto-rows: minmax(210px, 1fr); gap: 10px; padding: 10px 18px 18px; overflow: auto; }
-.result-card { position: relative; min-height: 0; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--bg-raised); }
+.result-gallery { min-height: 0; display: flex; align-items: flex-start; gap: 10px; padding: 10px 18px 18px; overflow: auto; }
+.result-gallery__column { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 10px; }
+.result-card { position: relative; min-height: 0; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--bg-raised); cursor: zoom-in; }
 .result-card.is-selected { border: 2px solid var(--accent); }
-.result-card > img { width: 100%; height: 100%; object-fit: cover; }
+.result-card > img { width: 100%; display: block; object-fit: cover; object-position: top; }
+/* 悬停/选中时浮现的控制层：选择框、收藏/删除、底部信息条 */
+.result-card__overlay { position: absolute; inset: 0; opacity: 0; transition: opacity .15s var(--ease); pointer-events: none; }
+.result-card:hover .result-card__overlay, .result-card:focus-within .result-card__overlay, .result-card.is-selected .result-card__overlay { opacity: 1; pointer-events: auto; }
 .result-card__check { position: absolute; top: 10px; left: 10px; }
-.result-card__favorite { position: absolute; top: 10px; right: 10px; width: 26px; height: 26px; display: grid; place-items: center; border-radius: 3px; color: rgba(255,255,255,.9); background: rgba(6,13,15,.3); }
+.result-card__controls { position: absolute; top: 10px; right: 10px; display: flex; flex-direction: column; gap: 6px; }
+.result-card__favorite { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 3px; color: rgba(255,255,255,.9); background: rgba(6,13,15,.3); }
 .result-card__favorite.is-active { color: #ffc24b; }
-.result-card__delete { position: absolute; top: 40px; right: 10px; width: 26px; height: 26px; display: grid; place-items: center; border-radius: 3px; color: rgba(255,255,255,.75); background: rgba(6,13,15,.3); }
+.result-card__delete { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 3px; color: rgba(255,255,255,.75); background: rgba(6,13,15,.3); }
 .result-card__delete:hover { color: #ff6b5e; }
 .result-card__meta { position: absolute; right: 0; bottom: 0; left: 0; min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px; background: linear-gradient(transparent, rgba(5, 9, 11, .9)); color: #fff; font-size: 10px; }
-.result-card__meta span { padding: 5px 7px; border-radius: 2px; background: rgba(7,12,14,.7); }
-.result-card__meta button { padding: 6px 8px; border-radius: 2px; color: #fff; background: rgba(7,12,14,.7); }
+.result-card__meta span { min-width: 0; padding: 5px 7px; border-radius: 2px; background: rgba(7,12,14,.7); }
+.result-card__meta span strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.result-card__meta span em { display: block; overflow: hidden; font-style: normal; opacity: .75; text-overflow: ellipsis; white-space: nowrap; }
+.result-card__meta button { flex: none; padding: 6px 8px; border-radius: 2px; color: #fff; background: rgba(7,12,14,.7); }
+/* 长图卡片（超限高被裁切）的"查看全图"提示 */
+.result-card__expand { position: absolute; left: 50%; bottom: 48px; transform: translateX(-50%); display: flex; align-items: center; gap: 4px; padding: 4px 9px; border-radius: 3px; color: #fff; font-size: 10px; background: rgba(6,13,15,.55); opacity: 0; transition: opacity .15s var(--ease); pointer-events: none; }
+.result-card.is-capped:hover .result-card__expand { opacity: 1; }
+
+/* ── 结果灯箱（大图预览：缩放 / 平移 / 翻页 / 收藏删除编辑） ─────────── */
+.lightbox-backdrop { position: fixed; inset: 0; z-index: 90; display: grid; grid-template-rows: 52px minmax(0, 1fr) 64px; background: rgba(2, 6, 8, .88); backdrop-filter: blur(6px); }
+.lightbox-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 0 16px; }
+.lightbox-actions { display: flex; gap: 8px; }
+.lightbox-actions button, .lightbox-close, .lightbox-nav { display: grid; place-items: center; border-radius: var(--radius-sm); color: rgba(255,255,255,.85); background: rgba(255,255,255,.08); }
+.lightbox-actions button, .lightbox-close { width: 34px; height: 34px; }
+.lightbox-actions button.is-active { color: #ffc24b; }
+.lightbox-actions button:hover, .lightbox-close:hover, .lightbox-nav:not(:disabled):hover { color: #fff; background: rgba(255,255,255,.16); }
+.lightbox-close { border: 1px solid rgba(255,255,255,.12); }
+.lightbox-stage { position: relative; min-height: 0; display: grid; place-items: center; overflow: hidden; cursor: grab; touch-action: none; user-select: none; }
+.lightbox-stage:active { cursor: grabbing; }
+.lightbox-stage > img { max-width: calc(100% - 48px); max-height: 100%; object-fit: contain; will-change: transform; }
+.lightbox-zoom-hint { position: absolute; right: 16px; bottom: 12px; padding: 4px 9px; border-radius: 3px; color: rgba(255,255,255,.8); font-size: 10px; background: rgba(255,255,255,.1); pointer-events: none; }
+.lightbox-footer { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; padding: 0 16px; }
+.lightbox-nav { width: 34px; height: 34px; border: 1px solid rgba(255,255,255,.12); }
+.lightbox-nav:disabled { opacity: .3; }
+.lightbox-nav:first-child { justify-self: end; }
+.lightbox-nav:last-child { justify-self: start; }
+.lightbox-info { min-width: 0; display: grid; justify-items: center; gap: 3px; color: rgba(255,255,255,.85); }
+.lightbox-info strong { overflow: hidden; max-width: min(56vw, 520px); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.lightbox-info span { font-size: 10px; opacity: .7; }
 
 .agent-review { padding: 18px; overflow: auto; }
 .agent-review h3 { margin: 0 0 15px; font-size: 13px; }
@@ -524,7 +556,7 @@
 .agent-blocked { display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 30px 16px; color: var(--warning); text-align: center; }.agent-blocked strong { color: var(--text-secondary); }.agent-blocked p { margin: 0; color: var(--text-muted); font-size: 10px; }
 
 .gallery-toolbar > label { height: 34px; display: flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: 9px; }.gallery-toolbar select { min-width: 0; height: 30px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); color: var(--text-secondary); background: var(--bg-raised); font-size: 10px; }
-.result-gallery--list { grid-template-columns: 1fr; grid-auto-rows: 110px; }.result-gallery--list .result-card { display: grid; grid-template-columns: 150px 1fr; }.result-gallery--list .result-card > img { width: 150px; }.result-gallery--list .result-card__meta { left: 150px; background: var(--bg-raised); color: var(--text-primary); }.result-gallery--list .result-card__meta span, .result-gallery--list .result-card__meta button { color: var(--text-secondary); background: var(--bg-panel); }
+.result-gallery--list { display: grid; grid-template-columns: 1fr; grid-auto-rows: 110px; }.result-gallery--list .result-card { display: grid; grid-template-columns: 150px 1fr; cursor: zoom-in; }.result-gallery--list .result-card > img { width: 150px; height: 100%; }.result-gallery--list .result-card__overlay { opacity: 1; pointer-events: auto; }.result-gallery--list .result-card__meta { left: 150px; background: var(--bg-raised); color: var(--text-primary); }.result-gallery--list .result-card__meta span, .result-gallery--list .result-card__meta button { color: var(--text-secondary); background: var(--bg-panel); }
 
 .task-toolbar select, .task-pagination select { height: 32px; padding: 0 7px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); color: var(--text-secondary); background: var(--bg-raised); font-size: 10px; }.task-pagination button:disabled { opacity: .45; }.task-actions > button { display: grid; place-items: center; color: var(--text-muted); }.task-actions > span { display: inline-grid; place-items: center; color: var(--text-muted); }
 
@@ -570,7 +602,6 @@
   .settings-screen { grid-template-columns: 240px minmax(600px, 1fr); }
   .settings-inspector { display: none; }
   .settings-footer { grid-column: 2; }
-  .result-gallery { grid-template-columns: repeat(3, minmax(150px, 1fr)); }
 }
 
 @media (max-height: 800px) {
@@ -580,7 +611,6 @@
   .product-preview { max-width: 280px; }
   .agent-step { min-height: 58px; }
   .agent-message { padding-block: 12px; }
-  .result-gallery { grid-auto-rows: minmax(180px, 1fr); }
 }
 
 @media (max-width: 1179px) {
