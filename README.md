@@ -2,7 +2,7 @@
 
 ListingForge 是面向 Windows 和 macOS 的本地 AI 电商图片工作台。用户上传主产品图与参考素材，选择中国主流电商平台、图片类型和尺寸后，由通义千问理解商品、DeepSeek Agent 规划方案，再调用 APIMart GPT-Image-2 生成系列图。
 
-> 当前仓库仍处于开发中，尚未发布可用于生产的安装包。已完成与待完成项以 [开发进度与 AI 交接](docs/00-项目总览/开发进度与AI交接.md) 为准。
+> 正式安装包已发布，最新版本 v0.1.5，见 [GitHub Releases](https://github.com/zhou9527-lj/listingforge/releases)（Windows x64 / macOS Intel / macOS Apple Silicon）。安装包尚未做商业代码签名与 Apple 公证，Windows SmartScreen 与 macOS Gatekeeper 可能提示风险，属已知项。已完成与待完成项以 [开发进度与 AI 交接](docs/00-项目总览/开发进度与AI交接.md) 为准。
 
 ## 主要特性
 
