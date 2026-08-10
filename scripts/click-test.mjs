@@ -300,6 +300,8 @@ try {
   await page.click(".modal-actions button:last-child");
   await page.waitForFunction(() => window.__LISTINGFORGE_SMOKE__.results.length === 1);
   // 画廊按时间倒序，第一张卡是较新的 result-del-2
+  // 文件删除经 IPC 往返，允许跨帧时序，先等待再断言（防 CI 时序 flaky）
+  await page.waitForFunction(() => window.__LISTINGFORGE_SMOKE__.deletedFiles.some((file) => file.endsWith("del-result-2.png")), { timeout: 5000 }).catch(() => {});
   const deletedAfterResult = await page.evaluate(() => JSON.stringify(window.__LISTINGFORGE_SMOKE__.deletedFiles));
   assert(deletedAfterResult.includes("del-result-2.png"), `results: 删除结果未同步删除本地文件 (deletedFiles=${deletedAfterResult})`);
   await page.click(".results-actions button:first-child");
@@ -344,7 +346,10 @@ try {
   await page.waitForSelector('[role="dialog"][aria-label="删除任务"]');
   await page.click(".modal-actions button:last-child");
   await page.waitForFunction(() => window.__LISTINGFORGE_SMOKE__.tasks.length === 1);
-  assert((await page.evaluate(() => window.__LISTINGFORGE_SMOKE__.deletedFiles)).some((file) => file.endsWith("del-result-1.png")), "tasks: 删除任务未同步删除结果文件");
+  // 文件删除经 IPC 往返，允许跨帧时序，先等待再断言（防 CI 时序 flaky）
+  await page.waitForFunction(() => window.__LISTINGFORGE_SMOKE__.deletedFiles.some((file) => file.endsWith("del-result-1.png")), { timeout: 5000 }).catch(() => {});
+  const deletedAfterTask = await page.evaluate(() => JSON.stringify(window.__LISTINGFORGE_SMOKE__.deletedFiles));
+  assert(deletedAfterTask.includes("del-result-1.png"), `tasks: 删除任务未同步删除结果文件 (deletedFiles=${deletedAfterTask})`);
   await page.click(".task-toolbar button:first-child");
 
   await go("settings");
