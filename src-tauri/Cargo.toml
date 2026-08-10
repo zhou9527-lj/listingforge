@@ -1,6 +1,6 @@
 [package]
 name = "listingforge"
-version = "0.1.5"
+version = "0.1.6"
 description = "Local-first AI e-commerce image studio"
 authors = ["ListingForge Contributors"]
 license = "MIT"
